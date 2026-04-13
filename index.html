@@ -713,6 +713,146 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
   );
 }
 
+// ─── Receipt Modal (Drive PDF) ───
+function ReceiptModal({ detail, onClose }) {
+  const [status, setStatus] = useState("idle"); // idle, loading, done, error
+  const [driveUrl, setDriveUrl] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const generateReceipt = async () => {
+    setStatus("loading");
+    const receiptData = {
+      date: detail.datetime?.replace("T", " "),
+      customer: detail.customerName || "",
+      staff: detail.staff,
+      items: (detail.items || []).map(item => ({
+        name: item.name, qty: item.qty, hours: item.hours,
+        plan: PLAN_NAMES.includes(item.name),
+        total: calcItemTotal(item),
+      })),
+      subtotal: detail.subtotal || 0,
+      tax: detail.tax || 0,
+      cardFee: detail.cardFee || 0,
+      amount: detail.amount,
+      payMethod: detail.payMethod || "cash",
+    };
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ action: "createReceipt", data: receiptData }),
+      });
+      const json = await res.json();
+      if (json.success && json.url) {
+        setDriveUrl(json.url);
+        setStatus("done");
+      } else {
+        setErrorMsg(json.error || "生成に失敗しました");
+        setStatus("error");
+      }
+    } catch (e) {
+      setErrorMsg("通信エラー: " + e.message);
+      setStatus("error");
+    }
+  };
+
+  const qrUrl = driveUrl ? `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(driveUrl)}` : "";
+
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
+      onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 24, maxWidth: 380, width: "100%", color: "#1a1a1a", maxHeight: "90vh", overflowY: "auto" }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Receipt content */}
+        <div style={{ textAlign: "center", borderBottom: "2px dashed #ccc", paddingBottom: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>領 収 書</div>
+          <div style={{ fontSize: 12, color: "#888" }}>{detail.datetime?.replace("T", " ")}</div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{detail.customerName || ""} 様</div>
+          <div style={{ fontSize: 11, color: "#888" }}>担当: {detail.staff}</div>
+        </div>
+        <div style={{ borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "8px 0", marginBottom: 12 }}>
+          {(detail.items || []).map((item, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+              <span>{item.name} {PLAN_NAMES.includes(item.name) ? `${item.qty}名` : `×${item.qty}`}</span>
+              <span style={{ fontWeight: 600 }}>{formatYen(calcItemTotal(item))}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "#888" }}>小計</span><span>{formatYen(detail.subtotal || 0)}</span>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(detail.tax || 0)}</span>
+        </div>
+        {detail.cardFee > 0 && (
+          <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+            <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(detail.cardFee)}</span>
+          </div>
+        )}
+        <div style={{ fontSize: 18, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
+          <span>合計</span><span>{formatYen(detail.amount)}</span>
+        </div>
+        <div style={{ textAlign: "right", marginTop: 4, marginBottom: 16 }}>
+          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: detail.payMethod === "card" ? "#e8f0fe" : "#e8fce8", color: detail.payMethod === "card" ? "#1a73e8" : "#1e7e34" }}>
+            {detail.payMethod === "card" ? "クレジット" : "現金"}
+          </span>
+        </div>
+
+        {/* Actions */}
+        {status === "idle" && (
+          <button onClick={generateReceipt} style={{
+            width: "100%", padding: "14px", borderRadius: 8, border: "none",
+            background: "#1a73e8", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
+          }}>Google DriveにPDF保存 & QR発行</button>
+        )}
+
+        {status === "loading" && (
+          <div style={{ textAlign: "center", padding: 20, color: "#888" }}>
+            <div style={{ fontSize: 14, marginBottom: 8 }}>PDF生成中...</div>
+            <div style={{ fontSize: 24 }}>⏳</div>
+          </div>
+        )}
+
+        {status === "error" && (
+          <div>
+            <div style={{ textAlign: "center", padding: 12, background: "#fee", borderRadius: 8, color: "#c00", fontSize: 13, marginBottom: 12 }}>
+              {errorMsg}
+            </div>
+            <button onClick={generateReceipt} style={{
+              width: "100%", padding: "12px", borderRadius: 8, border: "none",
+              background: "#1a73e8", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
+            }}>再試行</button>
+          </div>
+        )}
+
+        {status === "done" && (
+          <div>
+            <div style={{ textAlign: "center", borderTop: "2px dashed #ccc", paddingTop: 16 }}>
+              <div style={{ fontSize: 12, color: "#1e7e34", fontWeight: 600, marginBottom: 8 }}>✓ Google Driveに保存しました</div>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>QRコードを読み取るとPDFを確認できます</div>
+              <img src={qrUrl} alt="Receipt QR" style={{ width: 200, height: 200 }} />
+              <div style={{ marginTop: 12 }}>
+                <a href={driveUrl} target="_blank" rel="noopener noreferrer" style={{
+                  display: "inline-block", padding: "8px 16px", borderRadius: 8, background: "#e8f0fe", color: "#1a73e8",
+                  fontSize: 13, fontWeight: 600, textDecoration: "none",
+                }}>Google Driveで開く</a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button onClick={onClose} style={{
+          width: "100%", marginTop: 12, padding: "12px", borderRadius: 8, border: "none",
+          background: "#1a1a1a", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
+        }}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Receipt Table ───
 function ReceiptTable({ entries, canDelete, onDelete }) {
   const [filterCustomer, setFilterCustomer] = useState("all");
@@ -812,128 +952,7 @@ function ReceiptTable({ entries, canDelete, onDelete }) {
         </div>
 
         {/* Receipt Modal */}
-        {showReceipt && (() => {
-          const receiptData = {
-            date: detail.datetime?.replace("T", " "),
-            customer: detail.customerName || "",
-            staff: detail.staff,
-            items: (detail.items || []).map(item => ({
-              name: item.name,
-              qty: item.qty,
-              hours: item.hours,
-              price: item.price,
-              extPrice: item.extPrice,
-              plan: PLAN_NAMES.includes(item.name),
-              total: calcItemTotal(item),
-            })),
-            subtotal: detail.subtotal || 0,
-            tax: detail.tax || 0,
-            cardFee: detail.cardFee || 0,
-            amount: detail.amount,
-            payMethod: detail.payMethod || "cash",
-          };
-          const receiptHash = btoa(unescape(encodeURIComponent(JSON.stringify(receiptData))));
-          const baseUrl = window.location.href.split("#")[0].split("?")[0];
-          const receiptUrl = `${baseUrl}?receipt=${receiptHash}`;
-          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(receiptUrl)}`;
-
-          return (
-            <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
-              onClick={() => setShowReceipt(false)}>
-              <div style={{ background: "#fff", borderRadius: 16, padding: 24, maxWidth: 360, width: "100%", color: "#1a1a1a" }}
-                onClick={e => e.stopPropagation()}>
-                <div style={{ textAlign: "center", borderBottom: "2px dashed #ccc", paddingBottom: 16, marginBottom: 16 }}>
-                  <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>領 収 書</div>
-                  <div style={{ fontSize: 12, color: "#888" }}>{detail.datetime?.replace("T", " ")}</div>
-                </div>
-
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{detail.customerName || ""} 様</div>
-                  <div style={{ fontSize: 11, color: "#888" }}>担当: {detail.staff}</div>
-                </div>
-
-                <div style={{ borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "8px 0", marginBottom: 12 }}>
-                  {(detail.items || []).map((item, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
-                      <span>{item.name} {PLAN_NAMES.includes(item.name) ? `${item.qty}名` : `×${item.qty}`}</span>
-                      <span style={{ fontWeight: 600 }}>{formatYen(calcItemTotal(item))}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "#888" }}>小計</span><span>{formatYen(detail.subtotal || 0)}</span>
-                </div>
-                <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(detail.tax || 0)}</span>
-                </div>
-                {detail.cardFee > 0 && (
-                  <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(detail.cardFee)}</span>
-                  </div>
-                )}
-                <div style={{ fontSize: 18, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
-                  <span>合計</span><span>{formatYen(detail.amount)}</span>
-                </div>
-                <div style={{ textAlign: "right", marginTop: 4 }}>
-                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: detail.payMethod === "card" ? "#e8f0fe" : "#e8fce8", color: detail.payMethod === "card" ? "#1a73e8" : "#1e7e34" }}>
-                    {detail.payMethod === "card" ? "クレジット" : "現金"}
-                  </span>
-                </div>
-
-                <div style={{ textAlign: "center", marginTop: 16, borderTop: "2px dashed #ccc", paddingTop: 16 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>QRコードを読み取ると領収内容を確認できます</div>
-                  <img src={qrUrl} alt="Receipt QR" style={{ width: 180, height: 180 }} />
-                </div>
-
-                <button onClick={() => setShowReceipt(false)} style={{
-                  width: "100%", marginTop: 16, padding: "12px", borderRadius: 8, border: "none",
-                  background: "#1a1a1a", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
-                }}>閉じる</button>
-                <button onClick={() => {
-                  const itemsHtml = (detail.items || []).map(item =>
-                    `<tr><td style="padding:4px 0">${item.name} ${PLAN_NAMES.includes(item.name) ? item.qty+"名" : "×"+item.qty}</td><td style="padding:4px 0;text-align:right;font-weight:600">${formatYen(calcItemTotal(item))}</td></tr>`
-                  ).join("");
-                  const w = window.open("", "_blank");
-                  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>領収書</title>
-<style>@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700&display=swap');
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Noto Sans JP',sans-serif;padding:40px;max-width:400px;margin:0 auto;color:#1a1a1a}
-.title{text-align:center;font-size:22px;font-weight:700;margin-bottom:4px}
-.date{text-align:center;font-size:12px;color:#888;margin-bottom:20px}
-.info{margin-bottom:12px}.info .name{font-size:15px;font-weight:600}.info .staff{font-size:11px;color:#888}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px}
-.sep{border-top:1px solid #eee;border-bottom:1px solid #eee;padding:8px 0}
-.row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
-.row.dim span:first-child{color:#888}
-.total{display:flex;justify-content:space-between;font-size:18px;font-weight:700;border-top:2px solid #1a1a1a;padding-top:8px;margin-top:8px}
-.pay{text-align:right;margin-top:4px}
-.pay span{font-size:11px;padding:2px 8px;border-radius:4px}
-.qr{text-align:center;margin-top:16px;border-top:2px dashed #ccc;padding-top:16px}
-.qr p{font-size:11px;color:#888;margin-bottom:8px}
-@media print{button{display:none!important}}
-</style></head><body>
-<div class="title">領 収 書</div>
-<div class="date">${detail.datetime?.replace("T"," ")}</div>
-<div class="info"><div class="name">${detail.customerName||""} 様</div><div class="staff">担当: ${detail.staff}</div></div>
-<div class="sep"><table>${itemsHtml}</table></div>
-<div class="row dim"><span>小計</span><span>${formatYen(detail.subtotal||0)}</span></div>
-<div class="row dim"><span>消費税(10%)</span><span>${formatYen(detail.tax||0)}</span></div>
-${detail.cardFee > 0 ? `<div class="row dim"><span>カード手数料(10%)</span><span>${formatYen(detail.cardFee)}</span></div>` : ""}
-<div class="total"><span>合計</span><span>${formatYen(detail.amount)}</span></div>
-<div class="pay"><span style="background:${detail.payMethod==="card"?"#e8f0fe":"#e8fce8"};color:${detail.payMethod==="card"?"#1a73e8":"#1e7e34"}">${detail.payMethod==="card"?"クレジット":"現金"}</span></div>
-<div class="qr"><p>QRコードを読み取ると領収内容を確認できます</p><img src="${qrUrl}" width="180" height="180"/></div>
-<button onclick="window.print()" style="width:100%;margin-top:20px;padding:12px;border-radius:8px;border:none;background:#1a1a1a;color:#fff;font-size:14px;font-weight:600;cursor:pointer;font-family:'Noto Sans JP',sans-serif">印刷 / PDFで保存</button>
-</body></html>`);
-                  w.document.close();
-                }} style={{
-                  width: "100%", marginTop: 8, padding: "12px", borderRadius: 8, border: "none",
-                  background: palette.accent, color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
-                }}>PDFで保存</button>
-              </div>
-            </div>
-          );
-        })()}
+        {showReceipt && <ReceiptModal detail={detail} onClose={() => setShowReceipt(false)} />}
       </div>
     );
   }
@@ -1428,7 +1447,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   );
 }
 // ─── App ───
-const API_URL = "https://script.google.com/macros/s/AKfycbwZJ9_yc-hCHS1VYiiCtAlvWb6bvt9iHCrsuwp1AER949PMUSSIvtZqSgyjhUDpwSdV/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbzwOBVjzDcN2wMSSgQigKLWNVSj2Ov60kFX0ndv3FgIZzKy6OjrTn8bImk5Yben8fNO/exec";
 
 const STORAGE_KEY = "sales-manager-entries";
 const TABS_STORAGE_KEY = "sales-manager-open-tabs";
