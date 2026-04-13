@@ -790,12 +790,11 @@ function ReceiptModal({ detail, onClose }) {
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                 <div>
                   <div style={{ border: "1px solid #333", display: "inline-block", padding: "1px 6px", fontSize: 10, marginBottom: 6 }}>内　訳</div>
-                  <div style={{ padding: "2px 0" }}>税抜金額　{formatYen(detail.subtotal || 0)}</div>
-                  {detail.cardFee > 0 && <div style={{ padding: "2px 0" }}>カード手数料　{formatYen(detail.cardFee)}</div>}
-                  <div style={{ padding: "2px 0" }}>TAX（10%）　{formatYen(detail.tax || 0)}</div>
+                  <div style={{ padding: "2px 0" }}>税抜金額　{formatYen(Math.floor(detail.amount / 1.1))}</div>
+                  <div style={{ padding: "2px 0" }}>TAX（10%）　{formatYen(detail.amount - Math.floor(detail.amount / 1.1))}</div>
                 </div>
                 <div style={{ textAlign: "right", lineHeight: 1.8 }}>
-                  <div style={{ border: "1px solid #c33", display: "inline-block", padding: "2px 8px", color: "#c33", fontSize: 10, marginBottom: 4 }}>10%対象　{formatYen(detail.subtotal || 0)}</div><br/>
+                  <div style={{ border: "1px solid #c33", display: "inline-block", padding: "2px 8px", color: "#c33", fontSize: 10, marginBottom: 4 }}>10%対象　{formatYen(Math.floor(detail.amount / 1.1))}</div><br/>
                   決済：{detail.payMethod === "card" ? "クレジット" : "現金"}<br/>
                   担当：{detail.staff}
                 </div>
@@ -915,18 +914,12 @@ function ReceiptTable({ entries, canDelete, onDelete }) {
                 </div>
               ))}
               <div style={{ borderTop: `2px solid ${palette.border}`, marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-                <span style={{ fontWeight: 600 }}>小計</span>
-                <span style={{ fontWeight: 700 }}>{formatYen(detail.items.reduce((sum, item) => sum + calcItemTotal(item), 0))}</span>
+                <span style={{ fontWeight: 600 }}>税抜金額</span>
+                <span style={{ fontWeight: 700 }}>{formatYen(Math.floor(detail.amount / 1.1))}</span>
               </div>
-              {detail.payMethod === "card" && (
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
-                  <span style={{ color: palette.textDim }}>カード手数料 (10%)</span>
-                  <span style={{ color: palette.textDim }}>{formatYen(detail.cardFee || 0)}</span>
-                </div>
-              )}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
                 <span style={{ color: palette.textDim }}>TAX (10%)</span>
-                <span style={{ color: palette.textDim }}>{formatYen(detail.tax || 0)}</span>
+                <span style={{ color: palette.textDim }}>{formatYen(detail.amount - Math.floor(detail.amount / 1.1))}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, padding: "4px 0" }}>
                 <span>合計</span>
@@ -1474,7 +1467,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   );
 }
 // ─── App ───
-const API_URL = "https://script.google.com/macros/s/AKfycby027YAiCj-flHWUmcPbV38DkgPuExFdOd7E5A7nXsx_yTqYptVhImPWrRDQ1C_oh_f/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbx7CHzPmyOtrBKZ3k6ROK32eW9BRALeZUg4N9JK-ZR1VAnvcyd39q0g2xgtYdZpQodL/exec";
 
 const STORAGE_KEY = "sales-manager-entries";
 const TABS_STORAGE_KEY = "sales-manager-open-tabs";
@@ -1545,15 +1538,10 @@ function ReceiptViewer({ data }) {
           ))}
         </div>
         <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#888" }}>小計</span><span>{formatYen(data.subtotal)}</span>
+          <span style={{ color: "#888" }}>税抜金額</span><span>{formatYen(Math.floor(data.amount / 1.1))}</span>
         </div>
-        {data.cardFee > 0 && (
-          <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(data.cardFee)}</span>
-          </div>
-        )}
         <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#888" }}>TAX(10%)</span><span>{formatYen(data.tax)}</span>
+          <span style={{ color: "#888" }}>TAX(10%)</span><span>{formatYen(data.amount - Math.floor(data.amount / 1.1))}</span>
         </div>
         <div style={{ fontSize: 20, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
           <span>合計</span><span>{formatYen(data.amount)}</span>
