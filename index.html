@@ -2,12 +2,14 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>売上管理</title>
 <link rel="icon" href="data:,">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-text-size-adjust: 100%; }
+  html { touch-action: manipulation; }
+  input, select, textarea { font-size: 16px !important; }
   body { background: #0f1117; }
   #root { min-height: 100vh; }
 </style>
