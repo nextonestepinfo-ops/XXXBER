@@ -500,9 +500,10 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
           </div>
 
           {(() => {
-            const tax = Math.floor(total * 0.1);
             const cardFee = payMethod === "card" ? Math.floor(total * 0.1) : 0;
-            const grandTotal = total + tax + cardFee;
+            const taxBase = total + cardFee;
+            const tax = Math.floor(taxBase * 0.1);
+            const grandTotal = taxBase + tax;
             const rcv = parseInt(received) || 0;
             const change = rcv - grandTotal;
             return (
@@ -511,9 +512,9 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
                   <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 4 }}>お支払い金額</div>
                   <div style={{ fontSize: 36, fontWeight: 700, color: palette.white, fontVariantNumeric: "tabular-nums" }}>{formatYen(grandTotal)}</div>
                   <div style={{ fontSize: 13, color: palette.textDim, marginTop: 8, lineHeight: 1.8 }}>
-                    小計 {formatYen(total)}<br/>
-                    消費税(10%) {formatYen(tax)}
+                    小計 {formatYen(total)}
                     {payMethod === "card" && <><br/>カード手数料(10%) {formatYen(cardFee)}</>}
+                    <br/>TAX(10%) {formatYen(tax)}
                   </div>
                   <div style={{ fontSize: 12, color: palette.textDim, marginTop: 4 }}>{customer.name} 様 ・ {payMethod === "cash" ? "現金" : "クレジット"}</div>
                 </div>
@@ -602,9 +603,10 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
   const checkout = (id, items, role, datetime, payMethod) => {
     const tab = openTabs.find(t => t.id === id);
     const total = items.reduce((s, c) => s + calcItemTotal(c), 0);
-    const tax = Math.floor(total * 0.1);
     const cardFee = payMethod === "card" ? Math.floor(total * 0.1) : 0;
-    const grandTotal = total + tax + cardFee;
+    const taxBase = total + cardFee;
+    const tax = Math.floor(taxBase * 0.1);
+    const grandTotal = taxBase + tax;
     onAdd({
       id: crypto.randomUUID(),
       staff: fixedStaff,
@@ -613,6 +615,7 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
       subtotal: total,
       tax,
       cardFee,
+      taxBase,
       payMethod: payMethod || "cash",
       role: isManager ? "-" : role,
       datetime: isManager ? nowLocal() : datetime,
@@ -788,8 +791,8 @@ function ReceiptModal({ detail, onClose }) {
                 <div>
                   <div style={{ border: "1px solid #333", display: "inline-block", padding: "1px 6px", fontSize: 10, marginBottom: 6 }}>内　訳</div>
                   <div style={{ padding: "2px 0" }}>税抜金額　{formatYen(detail.subtotal || 0)}</div>
-                  <div style={{ padding: "2px 0" }}>消費税（10%）　{formatYen(detail.tax || 0)}</div>
                   {detail.cardFee > 0 && <div style={{ padding: "2px 0" }}>カード手数料　{formatYen(detail.cardFee)}</div>}
+                  <div style={{ padding: "2px 0" }}>TAX（10%）　{formatYen(detail.tax || 0)}</div>
                 </div>
                 <div style={{ textAlign: "right", lineHeight: 1.8 }}>
                   <div style={{ border: "1px solid #c33", display: "inline-block", padding: "2px 8px", color: "#c33", fontSize: 10, marginBottom: 4 }}>10%対象　{formatYen(detail.subtotal || 0)}</div><br/>
@@ -915,16 +918,16 @@ function ReceiptTable({ entries, canDelete, onDelete }) {
                 <span style={{ fontWeight: 600 }}>小計</span>
                 <span style={{ fontWeight: 700 }}>{formatYen(detail.items.reduce((sum, item) => sum + calcItemTotal(item), 0))}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
-                <span style={{ color: palette.textDim }}>消費税 (10%)</span>
-                <span style={{ color: palette.textDim }}>{formatYen(detail.tax || 0)}</span>
-              </div>
               {detail.payMethod === "card" && (
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
                   <span style={{ color: palette.textDim }}>カード手数料 (10%)</span>
                   <span style={{ color: palette.textDim }}>{formatYen(detail.cardFee || 0)}</span>
                 </div>
               )}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+                <span style={{ color: palette.textDim }}>TAX (10%)</span>
+                <span style={{ color: palette.textDim }}>{formatYen(detail.tax || 0)}</span>
+              </div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, padding: "4px 0" }}>
                 <span>合計</span>
                 <span style={{ color: palette.accent }}>{formatYen(detail.amount)}</span>
@@ -1471,7 +1474,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   );
 }
 // ─── App ───
-const API_URL = "https://script.google.com/macros/s/AKfycbzLthDDQo4Fr_TCxHliXPVAHJnv4iDF1PegIEKnY6ZGsjo7gze0fi36BwsPUsue9-ph/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycby027YAiCj-flHWUmcPbV38DkgPuExFdOd7E5A7nXsx_yTqYptVhImPWrRDQ1C_oh_f/exec";
 
 const STORAGE_KEY = "sales-manager-entries";
 const TABS_STORAGE_KEY = "sales-manager-open-tabs";
@@ -1544,14 +1547,14 @@ function ReceiptViewer({ data }) {
         <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
           <span style={{ color: "#888" }}>小計</span><span>{formatYen(data.subtotal)}</span>
         </div>
-        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(data.tax)}</span>
-        </div>
         {data.cardFee > 0 && (
           <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
             <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(data.cardFee)}</span>
           </div>
         )}
+        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "#888" }}>TAX(10%)</span><span>{formatYen(data.tax)}</span>
+        </div>
         <div style={{ fontSize: 20, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
           <span>合計</span><span>{formatYen(data.amount)}</span>
         </div>
