@@ -764,42 +764,42 @@ function ReceiptModal({ detail, onClose }) {
       <div style={{ background: "#fff", borderRadius: 16, padding: 24, maxWidth: 380, width: "100%", color: "#1a1a1a", maxHeight: "90vh", overflowY: "auto" }}
         onClick={e => e.stopPropagation()}>
 
-        {/* Receipt content */}
-        <div style={{ textAlign: "center", borderBottom: "2px dashed #ccc", paddingBottom: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>領 収 書</div>
-          <div style={{ fontSize: 12, color: "#888" }}>{detail.datetime?.replace("T", " ")}</div>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>{detail.customerName || ""} 様</div>
-          <div style={{ fontSize: 11, color: "#888" }}>担当: {detail.staff}</div>
-        </div>
-        <div style={{ borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "8px 0", marginBottom: 12 }}>
-          {(detail.items || []).map((item, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
-              <span>{item.name} {PLAN_NAMES.includes(item.name) ? `${item.qty}名` : `×${item.qty}`}</span>
-              <span style={{ fontWeight: 600 }}>{formatYen(calcItemTotal(item))}</span>
+        {/* Receipt content - traditional style */}
+        {(() => {
+          const dateStr = detail.datetime || "";
+          const dm = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+          const jpDate = dm ? `${dm[1]}年${parseInt(dm[2])}月${parseInt(dm[3])}日` : dateStr;
+          const itemsList = (detail.items || []).map(item => item.name + (PLAN_NAMES.includes(item.name) ? ` ${item.qty}名` : ` ×${item.qty}`)).join("、");
+          return (
+            <div style={{ border: "2px solid #333", padding: "20px", marginBottom: 16 }}>
+              <div style={{ textAlign: "center", fontSize: 22, fontWeight: 700, letterSpacing: 12, marginBottom: 16 }}>領 収 書</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 16 }}>
+                <div style={{ fontSize: 14, borderBottom: "1px solid #333", paddingBottom: 4, minWidth: 140 }}>{detail.customerName || ""}　様</div>
+                <div style={{ fontSize: 12 }}>{jpDate}</div>
+              </div>
+              <div style={{ border: "2px solid #333", padding: "12px 16px", textAlign: "center", marginBottom: 12, position: "relative" }}>
+                <div style={{ position: "absolute", top: 3, left: 3, right: 3, bottom: 3, border: "1px solid #999" }} />
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: 3, position: "relative" }}>{formatYen(detail.amount)}−</div>
+              </div>
+              <div style={{ fontSize: 11, borderBottom: "1px solid #ccc", paddingBottom: 8, marginBottom: 12 }}>
+                <span style={{ fontWeight: 700 }}>但し</span>　{itemsList || "飲食代"}　として上記の金額を正に領収いたしました。
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                <div>
+                  <div style={{ border: "1px solid #333", display: "inline-block", padding: "1px 6px", fontSize: 10, marginBottom: 6 }}>内　訳</div>
+                  <div style={{ padding: "2px 0" }}>税抜金額　{formatYen(detail.subtotal || 0)}</div>
+                  <div style={{ padding: "2px 0" }}>消費税（10%）　{formatYen(detail.tax || 0)}</div>
+                  {detail.cardFee > 0 && <div style={{ padding: "2px 0" }}>カード手数料　{formatYen(detail.cardFee)}</div>}
+                </div>
+                <div style={{ textAlign: "right", lineHeight: 1.8 }}>
+                  <div style={{ border: "1px solid #c33", display: "inline-block", padding: "2px 8px", color: "#c33", fontSize: 10, marginBottom: 4 }}>10%対象　{formatYen(detail.subtotal || 0)}</div><br/>
+                  決済：{detail.payMethod === "card" ? "クレジット" : "現金"}<br/>
+                  担当：{detail.staff}
+                </div>
+              </div>
             </div>
-          ))}
-        </div>
-        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#888" }}>小計</span><span>{formatYen(detail.subtotal || 0)}</span>
-        </div>
-        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(detail.tax || 0)}</span>
-        </div>
-        {detail.cardFee > 0 && (
-          <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(detail.cardFee)}</span>
-          </div>
-        )}
-        <div style={{ fontSize: 18, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
-          <span>合計</span><span>{formatYen(detail.amount)}</span>
-        </div>
-        <div style={{ textAlign: "right", marginTop: 4, marginBottom: 16 }}>
-          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: detail.payMethod === "card" ? "#e8f0fe" : "#e8fce8", color: detail.payMethod === "card" ? "#1a73e8" : "#1e7e34" }}>
-            {detail.payMethod === "card" ? "クレジット" : "現金"}
-          </span>
-        </div>
+          );
+        })()}
 
         {/* Actions */}
         {status === "idle" && (
@@ -834,12 +834,6 @@ function ReceiptModal({ detail, onClose }) {
               <div style={{ fontSize: 12, color: "#1e7e34", fontWeight: 600, marginBottom: 8 }}>✓ Google Driveに保存しました</div>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>QRコードを読み取るとPDFを確認できます</div>
               <img src={qrUrl} alt="Receipt QR" style={{ width: 200, height: 200 }} />
-              <div style={{ marginTop: 12 }}>
-                <a href={driveUrl} target="_blank" rel="noopener noreferrer" style={{
-                  display: "inline-block", padding: "8px 16px", borderRadius: 8, background: "#e8f0fe", color: "#1a73e8",
-                  fontSize: 13, fontWeight: 600, textDecoration: "none",
-                }}>Google Driveで開く</a>
-              </div>
             </div>
           </div>
         )}
@@ -1447,7 +1441,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   );
 }
 // ─── App ───
-const API_URL = "https://script.google.com/macros/s/AKfycbyQeE0Z0TPqGq3MX9E7XtcGZbxAelbxYUdZqE7PEuvzeNnEJ7DEWqFFRLpha-zzH-XL/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbyjf43yrVKnjSTdmmiP3S60JLxVyff_0GOqiw6FIR-In4DjUdnZa80IpJaeF3PKK9Yx/exec";
 
 const STORAGE_KEY = "sales-manager-entries";
 const TABS_STORAGE_KEY = "sales-manager-open-tabs";
