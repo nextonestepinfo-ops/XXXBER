@@ -27,9 +27,10 @@ const DEFAULT_STAFF = [
   { name: "鈴木", role: "staff" },
   { name: "山田", role: "staff" },
 ];
-const ROLES = { メイン: 0.5, ヘルプ: 0.4, サクラ: 0.3 };
-const COMPANY_RATES = { メイン: 0.4, ヘルプ: 0.5, サクラ: 0.5 };
-const MGR_RATES = { メイン: 0.1, ヘルプ: 0.1, サクラ: 0.2 };
+const ROLES = { 従業員: 0.5, メイン: 0.5, ヘルプ: 0.4, サクラ: 0.3 };
+const COMPANY_RATES = { 従業員: 0.3, メイン: 0.4, ヘルプ: 0.5, サクラ: 0.5 };
+const MGR_RATES = { 従業員: 0.2, メイン: 0.1, ヘルプ: 0.1, サクラ: 0.2 };
+const MGR_SPLIT = 2; // 管理者2名に各10%ずつ配分
 
 const MANAGER_BASE = 150000;
 const BONUS_TIERS = [
@@ -59,6 +60,20 @@ function formatYen(n) {
   return "¥" + n.toLocaleString();
 }
 
+function roleTagColors(role) {
+  if (role === "従業員") return [palette.greenSoft, palette.green];
+  return [palette.cardAlt, palette.textDim];
+}
+
+function calcItemTotal(item) {
+  if (item.name === "セット制") {
+    const ext = item.extPrice || 1000;
+    const hours = item.hours || 1;
+    return item.qty * (item.price + Math.max(0, hours - 1) * ext);
+  }
+  return item.price * item.qty;
+}
+
 function nowLocal() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -70,7 +85,7 @@ function seedData() {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
-  const roles = ["メイン", "ヘルプ", "サクラ"];
+  const roles = ["従業員"];
   for (let d = 1; d <= 20; d++) {
     const staff = DEFAULT_STAFF[d % DEFAULT_STAFF.length].name;
     const customers = ["山本様", "中村様", "小林様", "加藤様", "吉田様"];
@@ -131,7 +146,7 @@ const s = {
 
 // ─── Login ───
 function Login({ onLogin, staffList }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(staffList.length > 0 ? staffList[0].name : "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [masterMode, setMasterMode] = useState(false);
@@ -139,8 +154,8 @@ function Login({ onLogin, staffList }) {
   const [masterError, setMasterError] = useState("");
 
   const handleLogin = () => {
-    if (!name.trim() || !password.trim()) { setError("名前とパスワードを入力してください"); return; }
-    const found = staffList.find(s => s.name === name.trim());
+    if (!name || !password.trim()) { setError("名前とパスワードを入力してください"); return; }
+    const found = staffList.find(s => s.name === name);
     if (!found) { setError("登録されていない名前です"); return; }
     if ((found.password || "0000") !== password) { setError("パスワードが違います"); return; }
     onLogin(found.role, found.name);
@@ -175,9 +190,15 @@ function Login({ onLogin, staffList }) {
       <div style={s.loginCard}>
         <div style={{ fontSize: 28, fontWeight: 700, color: palette.white, marginBottom: 6 }}>売上管理</div>
         <div style={{ color: palette.textDim, fontSize: 13, marginBottom: 32 }}>ログインしてください</div>
-        <input style={{ ...s.input, marginBottom: 12 }} type="text" placeholder="名前" value={name}
-          onChange={e => { setName(e.target.value); setError(""); }}
-          onKeyDown={e => { if (e.key === "Enter") handleLogin(); }} />
+        {staffList.length === 0 ? (
+          <div style={{ color: palette.textDim, fontSize: 13, marginBottom: 12 }}>スタッフが登録されていません</div>
+        ) : (
+          <select style={{ ...s.select, marginBottom: 12 }} value={name} onChange={e => { setName(e.target.value); setError(""); }}>
+            {staffList.map(st => (
+              <option key={st.name} value={st.name}>{st.name}（{st.role === "manager" ? "管理者" : "スタッフ"}）</option>
+            ))}
+          </select>
+        )}
         <input style={{ ...s.input, marginBottom: 12 }} type="password" placeholder="パスワード" value={password}
           onChange={e => { setPassword(e.target.value); setError(""); }}
           onKeyDown={e => { if (e.key === "Enter") handleLogin(); }} />
@@ -211,7 +232,7 @@ const DEFAULT_MENU = [
   ]},
   { cat: "料金設定", items: [
     { name: "飲み飲ませ（無制限）", price: 5000 },
-    { name: "セット制", price: 3000 },
+    { name: "セット制", price: 2000, extPrice: 1000 },
   ]},
 ];
 
@@ -242,7 +263,9 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
   const [cart, setCart] = useState(customer.items || []);
   const [activeCat, setActiveCat] = useState(menu[0].cat);
   const [showCheckout, setShowCheckout] = useState(false);
-  const [role, setRole] = useState(customer.role || "メイン");
+  const [payMethod, setPayMethod] = useState("cash");
+  const [received, setReceived] = useState("");
+  const [role, setRole] = useState("従業員");
   const [datetime, setDatetime] = useState(customer.datetime || nowLocal());
   const [now, setNow] = useState(Date.now());
 
@@ -251,15 +274,15 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
     return () => clearInterval(id);
   }, []);
 
-  // Auto-update セット制 qty - only increase, never decrease manual additions
+  // Auto-update セット制 hours based on elapsed time
   useEffect(() => {
     const setIdx = cart.findIndex(c => c.name === "セット制");
     if (setIdx < 0) return;
     const hours = elapsedHours(customer.startTime);
-    if (cart[setIdx].qty < hours) {
+    if ((cart[setIdx].hours || 1) < hours) {
       setCart(prev => {
         const next = [...prev];
-        next[setIdx] = { ...next[setIdx], qty: hours };
+        next[setIdx] = { ...next[setIdx], hours };
         return next;
       });
     }
@@ -268,19 +291,24 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
   const hasPlan = cart.some(c => PLAN_NAMES.includes(c.name));
   const planItems = menu.find(m => m.cat === "料金設定")?.items || [];
 
-  const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
+  const total = cart.reduce((s, c) => s + calcItemTotal(c), 0);
 
   const selectPlan = (item) => {
     setCart(prev => {
       const filtered = prev.filter(c => !PLAN_NAMES.includes(c.name));
-      return [...filtered, { ...item, qty: item.name === "セット制" ? elapsedHours(customer.startTime) : 1 }];
+      if (item.name === "セット制") {
+        return [...filtered, { ...item, qty: 1, hours: elapsedHours(customer.startTime) }];
+      }
+      return [...filtered, { ...item, qty: 1 }];
     });
   };
 
   const addItem = (item) => {
-    // If it's a plan item not yet in cart, use selectPlan
-    if (PLAN_NAMES.includes(item.name) && !cart.some(c => c.name === item.name)) {
-      selectPlan(item);
+    // Plan items: increment qty (= number of people)
+    if (PLAN_NAMES.includes(item.name)) {
+      const existing = cart.find(c => c.name === item.name);
+      if (!existing) { selectPlan(item); return; }
+      setCart(prev => prev.map(c => c.name === item.name ? { ...c, qty: c.qty + 1 } : c));
       return;
     }
     setCart(prev => {
@@ -298,11 +326,6 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
     setCart(prev => {
       const idx = prev.findIndex(c => c.name === name);
       if (idx < 0) return prev;
-      // セット制 cannot go below auto-calculated hours
-      if (name === "セット制") {
-        const minQty = elapsedHours(customer.startTime);
-        if (prev[idx].qty <= minQty) return prev;
-      }
       if (prev[idx].qty <= 1) return prev.filter(c => c.name !== name);
       const next = [...prev];
       next[idx] = { ...next[idx], qty: next[idx].qty - 1 };
@@ -325,10 +348,7 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
       </div>
 
       {!isManager && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
-          <select style={s.select} value={role} onChange={e => setRole(e.target.value)}>
-            {Object.keys(ROLES).map(r => <option key={r}>{r}</option>)}
-          </select>
+        <div style={{ marginBottom: 16 }}>
           <input style={s.input} type="datetime-local" value={datetime} onChange={e => setDatetime(e.target.value)} />
         </div>
       )}
@@ -349,8 +369,8 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
                 transition: "all .15s",
               }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>{item.name}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: palette.accent }}>{formatYen(item.price)}</div>
-                {item.name === "セット制" && <div style={{ fontSize: 11, color: palette.textDim, marginTop: 4 }}>1時間ごとに自動加算</div>}
+                <div style={{ fontSize: 18, fontWeight: 700, color: palette.accent }}>{formatYen(item.price)}/名</div>
+                {item.name === "セット制" && <div style={{ fontSize: 11, color: palette.textDim, marginTop: 4 }}>延長1時間ごと ¥1,000/名</div>}
                 {item.name === "飲み飲ませ（無制限）" && <div style={{ fontSize: 11, color: palette.textDim, marginTop: 4 }}>時間制限なし</div>}
               </button>
             ))}
@@ -360,9 +380,14 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
         <>
           {/* Selected Plan Badge */}
           <div style={{ marginBottom: 12 }}>
-            <span style={{ ...s.tag(palette.accentSoft, palette.accent), fontSize: 12, padding: "4px 12px" }}>
-              {cart.find(c => PLAN_NAMES.includes(c.name))?.name}
-            </span>
+            {(() => {
+              const plan = cart.find(c => PLAN_NAMES.includes(c.name));
+              return plan ? (
+                <span style={{ ...s.tag(palette.accentSoft, palette.accent), fontSize: 12, padding: "4px 12px" }}>
+                  {plan.name} ・ {plan.qty}名
+                </span>
+              ) : null;
+            })()}
           </div>
 
           {/* Category Tabs */}
@@ -390,15 +415,15 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
                 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{item.name}</div>
                   <div style={{ fontSize: 12, color: palette.textDim }}>{formatYen(item.price)}</div>
-                  {inCart && !isPlan && (
+                  {inCart && (
                     <div style={{
                       position: "absolute", top: -6, right: -6, width: 22, height: 22, borderRadius: 99,
-                      background: palette.accent, color: "#fff", fontSize: 11, fontWeight: 700,
+                      background: isPlan ? palette.green : palette.accent, color: "#fff", fontSize: 11, fontWeight: 700,
                       display: "flex", alignItems: "center", justifyContent: "center",
                     }}>{inCart.qty}</div>
                   )}
                   {isActivePlan && (
-                    <div style={{ fontSize: 10, color: palette.green, marginTop: 4, fontWeight: 600 }}>✓ 選択中</div>
+                    <div style={{ fontSize: 10, color: palette.green, marginTop: 4, fontWeight: 600 }}>✓ {inCart.qty}名</div>
                   )}
                 </button>
               );
@@ -418,10 +443,16 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontWeight: 600 }}>{c.name}</span>
-                <span style={{ color: palette.textDim, fontSize: 12 }}>× {c.qty}</span>
+                {c.name === "セット制" ? (
+                  <span style={{ color: palette.textDim, fontSize: 12 }}>{c.qty}名 ・ {(c.hours || 1) <= 1 ? "基本" : `基本＋延長${(c.hours||1) - 1}回`}</span>
+                ) : c.name === "飲み飲ませ（無制限）" ? (
+                  <span style={{ color: palette.textDim, fontSize: 12 }}>{c.qty}名</span>
+                ) : (
+                  <span style={{ color: palette.textDim, fontSize: 12 }}>× {c.qty}</span>
+                )}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatYen(c.price * c.qty)}</span>
+                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatYen(calcItemTotal(c))}</span>
                 <button onClick={() => addItem(c)} style={{
                   background: "none", border: `1px solid ${palette.border}`, borderRadius: 6,
                   color: palette.green, cursor: "pointer", fontSize: 14, width: 26, height: 26,
@@ -452,19 +483,83 @@ function OrderPanel({ customer, onSave, onCheckout, onBack, isManager, menu }) {
         </div>
       ) : (
         <div style={{ background: palette.cardAlt, borderRadius: 12, border: `1px solid ${palette.accent}`, padding: 20 }}>
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 4 }}>お支払い金額（税込）</div>
-            <div style={{ fontSize: 36, fontWeight: 700, color: palette.white, fontVariantNumeric: "tabular-nums" }}>{formatYen(Math.floor(total * 1.1))}</div>
-            <div style={{ fontSize: 13, color: palette.textDim, marginTop: 6 }}>
-              小計 {formatYen(total)}　＋　消費税(10%) {formatYen(Math.floor(total * 0.1))}
-            </div>
-            <div style={{ fontSize: 12, color: palette.textDim, marginTop: 4 }}>{customer.name} 様 ・ {cart.reduce((s, c) => s + c.qty, 0)}点</div>
+          {/* Payment Method */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+            <button onClick={() => { setPayMethod("cash"); setReceived(""); }} style={{
+              padding: "14px", borderRadius: 10, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer",
+              border: `2px solid ${payMethod === "cash" ? palette.green : palette.border}`,
+              background: payMethod === "cash" ? palette.greenSoft : "transparent",
+              color: payMethod === "cash" ? palette.green : palette.textDim,
+            }}>現金</button>
+            <button onClick={() => { setPayMethod("card"); setReceived(""); }} style={{
+              padding: "14px", borderRadius: 10, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer",
+              border: `2px solid ${payMethod === "card" ? palette.accent : palette.border}`,
+              background: payMethod === "card" ? palette.accentSoft : "transparent",
+              color: payMethod === "card" ? palette.accent : palette.textDim,
+            }}>クレジット</button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <button style={{ ...s.btnOutline, padding: "12px", fontSize: 14 }} onClick={() => setShowCheckout(false)}>戻る</button>
-            <button style={{ ...s.btn, padding: "12px", fontSize: 14, background: palette.green }}
-              onClick={() => onCheckout(cart, role, datetime)}>支払い</button>
-          </div>
+
+          {(() => {
+            const tax = Math.floor(total * 0.1);
+            const cardFee = payMethod === "card" ? Math.floor(total * 0.1) : 0;
+            const grandTotal = total + tax + cardFee;
+            const rcv = parseInt(received) || 0;
+            const change = rcv - grandTotal;
+            return (
+              <>
+                <div style={{ textAlign: "center", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 4 }}>お支払い金額</div>
+                  <div style={{ fontSize: 36, fontWeight: 700, color: palette.white, fontVariantNumeric: "tabular-nums" }}>{formatYen(grandTotal)}</div>
+                  <div style={{ fontSize: 13, color: palette.textDim, marginTop: 8, lineHeight: 1.8 }}>
+                    小計 {formatYen(total)}<br/>
+                    消費税(10%) {formatYen(tax)}
+                    {payMethod === "card" && <><br/>カード手数料(10%) {formatYen(cardFee)}</>}
+                  </div>
+                  <div style={{ fontSize: 12, color: palette.textDim, marginTop: 4 }}>{customer.name} 様 ・ {payMethod === "cash" ? "現金" : "クレジット"}</div>
+                </div>
+
+                {payMethod === "cash" && (
+                  <div style={{ background: palette.bg, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: palette.textDim, marginBottom: 8 }}>預かり金額</div>
+                    <input style={{ ...s.input, fontSize: 20, fontWeight: 700, textAlign: "right", marginBottom: 8 }}
+                      type="number" placeholder="0" value={received}
+                      onChange={e => setReceived(e.target.value)} />
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                      {[1000, 2000, 3000, 5000, 10000, 20000, 30000, 50000].map(amt => (
+                        <button key={amt} onClick={() => setReceived(String(amt))} style={{
+                          ...s.btnOutline, padding: "6px 10px", fontSize: 12, flex: "1 0 auto", minWidth: 60,
+                          ...(parseInt(received) === amt ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}),
+                        }}>{formatYen(amt)}</button>
+                      ))}
+                      <button onClick={() => setReceived(String(grandTotal))} style={{
+                        ...s.btnOutline, padding: "6px 10px", fontSize: 12, flex: "1 0 auto", minWidth: 60,
+                        borderColor: palette.green, color: palette.green,
+                      }}>ぴったり</button>
+                    </div>
+                    {rcv > 0 && (
+                      <div style={{
+                        textAlign: "center", padding: 12, borderRadius: 10,
+                        background: change >= 0 ? palette.greenSoft : "rgba(248,113,113,0.12)",
+                      }}>
+                        <div style={{ fontSize: 12, color: change >= 0 ? palette.green : palette.red, marginBottom: 4 }}>
+                          {change >= 0 ? "お釣り" : "不足"}
+                        </div>
+                        <div style={{ fontSize: 28, fontWeight: 700, color: change >= 0 ? palette.green : palette.red, fontVariantNumeric: "tabular-nums" }}>
+                          {formatYen(Math.abs(change))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <button style={{ ...s.btnOutline, padding: "12px", fontSize: 14 }} onClick={() => { setShowCheckout(false); setReceived(""); }}>戻る</button>
+                  <button style={{ ...s.btn, padding: "12px", fontSize: 14, background: palette.green, opacity: payMethod === "cash" && rcv > 0 && change < 0 ? 0.4 : 1 }}
+                    onClick={() => { if (payMethod === "card" || change >= 0) { onCheckout(cart, role, datetime, payMethod); setReceived(""); } }}>支払い</button>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -488,7 +583,7 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
   const addCustomer = () => {
     if (!newName.trim()) return;
     const id = crypto.randomUUID();
-    setOpenTabs([...openTabs, { id, name: newName.trim(), staff: fixedStaff, items: [], role: "メイン", datetime: nowLocal(), startTime: Date.now() }]);
+    setOpenTabs([...openTabs, { id, name: newName.trim(), staff: fixedStaff, items: [], role: "従業員", datetime: nowLocal(), startTime: Date.now() }]);
     setNewName("");
     setSelectedId(id);
   };
@@ -504,16 +599,21 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
     setOpenTabs(openTabs.map(t => t.id === id ? { ...t, items, role, datetime } : t));
   };
 
-  const checkout = (id, items, role, datetime) => {
+  const checkout = (id, items, role, datetime, payMethod) => {
     const tab = openTabs.find(t => t.id === id);
-    const total = items.reduce((s, c) => s + c.price * c.qty, 0);
+    const total = items.reduce((s, c) => s + calcItemTotal(c), 0);
+    const tax = Math.floor(total * 0.1);
+    const cardFee = payMethod === "card" ? Math.floor(total * 0.1) : 0;
+    const grandTotal = total + tax + cardFee;
     onAdd({
       id: crypto.randomUUID(),
       staff: fixedStaff,
       customerName: tab.name,
-      amount: Math.floor(total * 1.1),
+      amount: grandTotal,
       subtotal: total,
-      tax: Math.floor(total * 0.1),
+      tax,
+      cardFee,
+      payMethod: payMethod || "cash",
       role: isManager ? "-" : role,
       datetime: isManager ? nowLocal() : datetime,
       items,
@@ -531,7 +631,7 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
         isManager={isManager}
         menu={menu}
         onSave={(items, role, datetime) => saveItems(selected.id, items, role, datetime)}
-        onCheckout={(items, role, datetime) => checkout(selected.id, items, role, datetime)}
+        onCheckout={(items, role, datetime, payMethod) => checkout(selected.id, items, role, datetime, payMethod)}
         onBack={() => setSelectedId(null)}
       />
     );
@@ -552,7 +652,7 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
           {myTabs.map(tab => {
-            const tabTotal = tab.items.reduce((s, c) => s + c.price * c.qty, 0);
+            const tabTotal = tab.items.reduce((s, c) => s + calcItemTotal(c), 0);
             const itemCount = tab.items.reduce((s, c) => s + c.qty, 0);
             const isConfirming = confirmDeleteId === tab.id;
             return (
@@ -616,10 +716,228 @@ function EntryForm({ onAdd, fixedStaff, isManager, openTabs, onUpdateTabs, menu 
 // ─── Receipt Table ───
 function ReceiptTable({ entries, canDelete, onDelete }) {
   const [filterCustomer, setFilterCustomer] = useState("all");
+  const [detailId, setDetailId] = useState(null);
+  const [showReceipt, setShowReceipt] = useState(false);
   const customers = [...new Set(entries.map(e => e.customerName).filter(Boolean))].sort();
   const filtered = filterCustomer === "all" ? entries : entries.filter(e => e.customerName === filterCustomer);
+  const detail = detailId ? entries.find(e => e.id === detailId) : null;
 
   if (!entries.length) return <div style={{ ...s.card, color: palette.textDim, textAlign: "center" }}>伝票データがありません</div>;
+
+  // Detail view
+  if (detail) {
+    const taxEx = Math.floor(detail.amount / 1.1);
+    return (
+      <div>
+        <button onClick={() => { setDetailId(null); setShowReceipt(false); }} style={{ ...s.btnOutline, marginBottom: 12, padding: "6px 14px", fontSize: 12 }}>← 伝票一覧に戻る</button>
+        <div style={s.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: palette.white, marginBottom: 4 }}>{detail.customerName || "未入力"} 様</div>
+              <div style={{ fontSize: 12, color: palette.textDim }}>{detail.datetime?.replace("T", " ")}</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <span style={s.tag(palette.accentSoft, palette.accent)}>{detail.staff}</span>
+                <span style={s.tag(...roleTagColors(detail.role))}>{detail.role}</span>
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 24, fontWeight: 700, color: palette.white, fontVariantNumeric: "tabular-nums" }}>{formatYen(detail.amount)}</div>
+              <div style={{ fontSize: 12, color: palette.textDim }}>税抜 {formatYen(taxEx)}</div>
+            </div>
+          </div>
+
+          {/* Items detail */}
+          {detail.items && detail.items.length > 0 ? (
+            <div style={{ background: palette.cardAlt, borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: palette.textDim, marginBottom: 8 }}>注文明細</div>
+              {detail.items.map((item, i) => (
+                <div key={i} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "8px 0", borderBottom: i < detail.items.length - 1 ? `1px solid ${palette.border}` : "none", fontSize: 14,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontWeight: 600 }}>{item.name}</span>
+                    {item.name === "セット制" ? (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>{item.qty}名 ・ {(item.hours||1) <= 1 ? "基本" : `基本＋延長${(item.hours||1) - 1}回`}</span>
+                    ) : item.name === "飲み飲ませ（無制限）" ? (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>{item.qty}名</span>
+                    ) : (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>× {item.qty}</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {item.name === "セット制" ? (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>{item.qty}名×({formatYen(item.price)}+延長{formatYen(item.extPrice||1000)}×{Math.max(0,(item.hours||1)-1)})</span>
+                    ) : PLAN_NAMES.includes(item.name) ? (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>{item.qty}名×{formatYen(item.price)}</span>
+                    ) : (
+                      <span style={{ color: palette.textDim, fontSize: 12 }}>@{formatYen(item.price)}</span>
+                    )}
+                    <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatYen(calcItemTotal(item))}</span>
+                  </div>
+                </div>
+              ))}
+              <div style={{ borderTop: `2px solid ${palette.border}`, marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ fontWeight: 600 }}>小計</span>
+                <span style={{ fontWeight: 700 }}>{formatYen(detail.items.reduce((sum, item) => sum + calcItemTotal(item), 0))}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+                <span style={{ color: palette.textDim }}>消費税 (10%)</span>
+                <span style={{ color: palette.textDim }}>{formatYen(detail.tax || 0)}</span>
+              </div>
+              {detail.payMethod === "card" && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+                  <span style={{ color: palette.textDim }}>カード手数料 (10%)</span>
+                  <span style={{ color: palette.textDim }}>{formatYen(detail.cardFee || 0)}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, padding: "4px 0" }}>
+                <span>合計</span>
+                <span style={{ color: palette.accent }}>{formatYen(detail.amount)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                <span style={s.tag(detail.payMethod === "card" ? palette.accentSoft : palette.greenSoft, detail.payMethod === "card" ? palette.accent : palette.green)}>
+                  {detail.payMethod === "card" ? "クレジット" : "現金"}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: palette.textDim, fontSize: 13 }}>明細データなし</div>
+          )}
+
+          {canDelete && (
+            <button onClick={() => { onDelete(detail.id); setDetailId(null); }} style={{ ...s.btn, width: "100%", background: palette.red, marginTop: 16 }}>この伝票を削除</button>
+          )}
+          <button onClick={() => setShowReceipt(true)} style={{ ...s.btn, width: "100%", marginTop: 10, background: palette.accent }}>領収書を発行</button>
+        </div>
+
+        {/* Receipt Modal */}
+        {showReceipt && (() => {
+          const receiptData = {
+            date: detail.datetime?.replace("T", " "),
+            customer: detail.customerName || "",
+            staff: detail.staff,
+            items: (detail.items || []).map(item => ({
+              name: item.name,
+              qty: item.qty,
+              hours: item.hours,
+              price: item.price,
+              extPrice: item.extPrice,
+              plan: PLAN_NAMES.includes(item.name),
+              total: calcItemTotal(item),
+            })),
+            subtotal: detail.subtotal || 0,
+            tax: detail.tax || 0,
+            cardFee: detail.cardFee || 0,
+            amount: detail.amount,
+            payMethod: detail.payMethod || "cash",
+          };
+          const receiptHash = btoa(unescape(encodeURIComponent(JSON.stringify(receiptData))));
+          const baseUrl = window.location.href.split("#")[0].split("?")[0];
+          const receiptUrl = `${baseUrl}?receipt=${receiptHash}`;
+          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(receiptUrl)}`;
+
+          return (
+            <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
+              onClick={() => setShowReceipt(false)}>
+              <div style={{ background: "#fff", borderRadius: 16, padding: 24, maxWidth: 360, width: "100%", color: "#1a1a1a" }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ textAlign: "center", borderBottom: "2px dashed #ccc", paddingBottom: 16, marginBottom: 16 }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>領 収 書</div>
+                  <div style={{ fontSize: 12, color: "#888" }}>{detail.datetime?.replace("T", " ")}</div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{detail.customerName || ""} 様</div>
+                  <div style={{ fontSize: 11, color: "#888" }}>担当: {detail.staff}</div>
+                </div>
+
+                <div style={{ borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "8px 0", marginBottom: 12 }}>
+                  {(detail.items || []).map((item, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+                      <span>{item.name} {PLAN_NAMES.includes(item.name) ? `${item.qty}名` : `×${item.qty}`}</span>
+                      <span style={{ fontWeight: 600 }}>{formatYen(calcItemTotal(item))}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "#888" }}>小計</span><span>{formatYen(detail.subtotal || 0)}</span>
+                </div>
+                <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(detail.tax || 0)}</span>
+                </div>
+                {detail.cardFee > 0 && (
+                  <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(detail.cardFee)}</span>
+                  </div>
+                )}
+                <div style={{ fontSize: 18, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
+                  <span>合計</span><span>{formatYen(detail.amount)}</span>
+                </div>
+                <div style={{ textAlign: "right", marginTop: 4 }}>
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: detail.payMethod === "card" ? "#e8f0fe" : "#e8fce8", color: detail.payMethod === "card" ? "#1a73e8" : "#1e7e34" }}>
+                    {detail.payMethod === "card" ? "クレジット" : "現金"}
+                  </span>
+                </div>
+
+                <div style={{ textAlign: "center", marginTop: 16, borderTop: "2px dashed #ccc", paddingTop: 16 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>QRコードを読み取ると領収内容を確認できます</div>
+                  <img src={qrUrl} alt="Receipt QR" style={{ width: 180, height: 180 }} />
+                </div>
+
+                <button onClick={() => setShowReceipt(false)} style={{
+                  width: "100%", marginTop: 16, padding: "12px", borderRadius: 8, border: "none",
+                  background: "#1a1a1a", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
+                }}>閉じる</button>
+                <button onClick={() => {
+                  const itemsHtml = (detail.items || []).map(item =>
+                    `<tr><td style="padding:4px 0">${item.name} ${PLAN_NAMES.includes(item.name) ? item.qty+"名" : "×"+item.qty}</td><td style="padding:4px 0;text-align:right;font-weight:600">${formatYen(calcItemTotal(item))}</td></tr>`
+                  ).join("");
+                  const w = window.open("", "_blank");
+                  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>領収書</title>
+<style>@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Noto Sans JP',sans-serif;padding:40px;max-width:400px;margin:0 auto;color:#1a1a1a}
+.title{text-align:center;font-size:22px;font-weight:700;margin-bottom:4px}
+.date{text-align:center;font-size:12px;color:#888;margin-bottom:20px}
+.info{margin-bottom:12px}.info .name{font-size:15px;font-weight:600}.info .staff{font-size:11px;color:#888}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px}
+.sep{border-top:1px solid #eee;border-bottom:1px solid #eee;padding:8px 0}
+.row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
+.row.dim span:first-child{color:#888}
+.total{display:flex;justify-content:space-between;font-size:18px;font-weight:700;border-top:2px solid #1a1a1a;padding-top:8px;margin-top:8px}
+.pay{text-align:right;margin-top:4px}
+.pay span{font-size:11px;padding:2px 8px;border-radius:4px}
+.qr{text-align:center;margin-top:16px;border-top:2px dashed #ccc;padding-top:16px}
+.qr p{font-size:11px;color:#888;margin-bottom:8px}
+@media print{button{display:none!important}}
+</style></head><body>
+<div class="title">領 収 書</div>
+<div class="date">${detail.datetime?.replace("T"," ")}</div>
+<div class="info"><div class="name">${detail.customerName||""} 様</div><div class="staff">担当: ${detail.staff}</div></div>
+<div class="sep"><table>${itemsHtml}</table></div>
+<div class="row dim"><span>小計</span><span>${formatYen(detail.subtotal||0)}</span></div>
+<div class="row dim"><span>消費税(10%)</span><span>${formatYen(detail.tax||0)}</span></div>
+${detail.cardFee > 0 ? `<div class="row dim"><span>カード手数料(10%)</span><span>${formatYen(detail.cardFee)}</span></div>` : ""}
+<div class="total"><span>合計</span><span>${formatYen(detail.amount)}</span></div>
+<div class="pay"><span style="background:${detail.payMethod==="card"?"#e8f0fe":"#e8fce8"};color:${detail.payMethod==="card"?"#1a73e8":"#1e7e34"}">${detail.payMethod==="card"?"クレジット":"現金"}</span></div>
+<div class="qr"><p>QRコードを読み取ると領収内容を確認できます</p><img src="${qrUrl}" width="180" height="180"/></div>
+<button onclick="window.print()" style="width:100%;margin-top:20px;padding:12px;border-radius:8px;border:none;background:#1a1a1a;color:#fff;font-size:14px;font-weight:600;cursor:pointer;font-family:'Noto Sans JP',sans-serif">印刷 / PDFで保存</button>
+</body></html>`);
+                  w.document.close();
+                }} style={{
+                  width: "100%", marginTop: 8, padding: "12px", borderRadius: 8, border: "none",
+                  background: palette.accent, color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: font,
+                }}>PDFで保存</button>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+    );
+  }
+
   return (
     <div>
       {customers.length > 1 && (
@@ -638,29 +956,26 @@ function ReceiptTable({ entries, canDelete, onDelete }) {
                 <th style={s.th}>日時</th>
                 <th style={s.th}>お客様</th>
                 <th style={s.th}>担当者</th>
-                <th style={s.th}>区分</th>
+                <th style={s.th}>決済</th>
                 <th style={s.th}>金額</th>
-                {canDelete && <th style={s.th}></th>}
+                <th style={s.th}></th>
               </tr>
             </thead>
             <tbody>
               {filtered.slice().sort((a, b) => b.datetime.localeCompare(a.datetime)).map(e => (
-                <tr key={e.id}>
+                <tr key={e.id} onClick={() => setDetailId(e.id)} style={{ cursor: "pointer", transition: "background .1s" }}
+                  onMouseEnter={ev => ev.currentTarget.style.background = palette.cardAlt}
+                  onMouseLeave={ev => ev.currentTarget.style.background = ""}>
                   <td style={s.td}>{e.datetime.replace("T", " ")}</td>
                   <td style={{ ...s.td, fontWeight: 600 }}>{e.customerName || "-"}</td>
                   <td style={s.td}>{e.staff}</td>
                   <td style={s.td}>
-                    <span style={s.tag(
-                      e.role === "メイン" ? palette.accentSoft : e.role === "ヘルプ" ? palette.greenSoft : palette.orangeSoft,
-                      e.role === "メイン" ? palette.accent : e.role === "ヘルプ" ? palette.green : palette.orange
-                    )}>{e.role}</span>
+                    <span style={s.tag(e.payMethod === "card" ? palette.accentSoft : palette.greenSoft, e.payMethod === "card" ? palette.accent : palette.green)}>
+                      {e.payMethod === "card" ? "カード" : "現金"}
+                    </span>
                   </td>
                   <td style={{ ...s.td, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatYen(e.amount)}</td>
-                  {canDelete && (
-                    <td style={s.td}>
-                      <button onClick={() => onDelete(e.id)} style={{ background: "none", border: "none", color: palette.red, cursor: "pointer", fontSize: 13 }}>削除</button>
-                    </td>
-                  )}
+                  <td style={{ ...s.td, color: palette.accent, fontSize: 12 }}>詳細</td>
                 </tr>
               ))}
             </tbody>
@@ -689,6 +1004,7 @@ function SalarySummary({ entries, staffName, managerName }) {
   const totalAllSales = filtered.reduce((s, e) => s + e.amount, 0);
   const totalTaxExcluded = Object.values(byStaff).reduce((s, v) => s + v.taxExcluded, 0);
   const totalMgrShare = Object.values(byStaff).reduce((s, v) => s + v.mgrShare, 0);
+  const perMgrShare = Math.floor(totalMgrShare / MGR_SPLIT); // 各管理者10%ずつ
 
   // Manager's own sales
   const mgrOwnEntries = managerName ? filtered.filter(e => e.staff === managerName) : [];
@@ -707,8 +1023,8 @@ function SalarySummary({ entries, staffName, managerName }) {
                 <th style={s.th}>担当者</th>
                 <th style={s.th}>売上合計</th>
                 <th style={s.th}>税抜合計</th>
-                <th style={s.th}>報酬（乙）</th>
-                <th style={s.th}>管理者分</th>
+                <th style={s.th}>報酬50%</th>
+                <th style={s.th}>管理者20%</th>
               </tr>
             </thead>
             <tbody>
@@ -734,7 +1050,7 @@ function SalarySummary({ entries, staffName, managerName }) {
       </div>
 
       {managerName && (() => {
-        const mgrTotal = mgrOwnTaxExcluded + totalMgrShare;
+        const mgrTotal = mgrOwnTaxExcluded + perMgrShare;
         const bonus = calcManagerBonus(mgrTotal);
         const finalSalary = MANAGER_BASE + bonus;
         return (
@@ -747,12 +1063,13 @@ function SalarySummary({ entries, staffName, managerName }) {
                   <div style={{ ...s.statNum, fontSize: 22 }}>{formatYen(mgrOwnTaxExcluded)}</div>
                 </div>
                 <div>
-                  <div style={s.statLabel}>加算報酬（従業員分）</div>
-                  <div style={{ ...s.statNum, fontSize: 22 }}>{formatYen(totalMgrShare)}</div>
+                  <div style={s.statLabel}>管理者報酬（20%中の10%）</div>
+                  <div style={{ ...s.statNum, fontSize: 22 }}>{formatYen(perMgrShare)}</div>
                 </div>
                 <div style={{ gridColumn: "1 / -1" }}>
                   <div style={s.statLabel}>管理者 合計（税抜）</div>
                   <div style={{ ...s.statNum, fontSize: 24, color: palette.accent }}>{formatYen(mgrTotal)}</div>
+                  <div style={{ fontSize: 11, color: palette.textDim, marginTop: 4 }}>※管理者報酬20%のうち各管理者10%配分</div>
                 </div>
               </div>
             </div>
@@ -802,12 +1119,12 @@ function SalarySummary({ entries, staffName, managerName }) {
 // ─── Manager View ───
 function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList }) {
   const [tab, setTab] = useState("entry");
-  // Filter: own entries + entries from subordinate staff
-  const myTeam = staffList.filter(s => s.role === "staff" && s.managedBy === staffName).map(s => s.name);
-  const teamNames = [staffName, ...myTeam];
-  const teamEntries = entries.filter(e => teamNames.includes(e.staff));
-  const totalSales = teamEntries.reduce((s, e) => s + e.amount, 0);
-  const totalReceipts = teamEntries.length;
+  // Show own entries + staff entries only (not other managers)
+  const staffNames = staffList.filter(s => s.role === "staff").map(s => s.name);
+  const visibleNames = [staffName, ...staffNames];
+  const visibleEntries = entries.filter(e => visibleNames.includes(e.staff));
+  const totalSales = visibleEntries.reduce((s, e) => s + e.amount, 0);
+  const totalReceipts = visibleEntries.length;
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
 
   return (
@@ -835,8 +1152,8 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
         ))}
       </div>
       {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} isManager openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
-      {tab === "list" && <ReceiptTable entries={teamEntries} canDelete onDelete={onDelete} />}
-      {tab === "salary" && <SalarySummary entries={teamEntries} managerName={staffName} />}
+      {tab === "list" && <ReceiptTable entries={visibleEntries} canDelete onDelete={onDelete} />}
+      {tab === "salary" && <SalarySummary entries={visibleEntries} managerName={staffName} />}
     </div>
   );
 }
@@ -882,7 +1199,6 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   const [tab, setTab] = useState("staff");
   const [newStaffName, setNewStaffName] = useState("");
   const [newStaffRole, setNewStaffRole] = useState("staff");
-  const [newStaffManager, setNewStaffManager] = useState("");
   const [newStaffPassword, setNewStaffPassword] = useState("0000");
   const [newCatName, setNewCatName] = useState("");
   const [newItemCat, setNewItemCat] = useState(menu[0]?.cat || "");
@@ -897,17 +1213,12 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
 
   const addStaff = () => {
     if (!newStaffName.trim() || staffList.some(s => s.name === newStaffName.trim())) return;
-    const entry = { name: newStaffName.trim(), role: newStaffRole, password: newStaffPassword || "0000" };
-    if (newStaffRole === "staff" && newStaffManager) entry.managedBy = newStaffManager;
-    onUpdateStaff([...staffList, entry]);
+    onUpdateStaff([...staffList, { name: newStaffName.trim(), role: newStaffRole, password: newStaffPassword || "0000" }]);
     setNewStaffName("");
     setNewStaffPassword("0000");
   };
-  const removeStaff = (name) => {
-    onUpdateStaff(staffList.filter(s => s.name !== name).map(s => s.managedBy === name ? { ...s, managedBy: "" } : s));
-  };
-  const toggleRole = (name) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, role: s.role === "manager" ? "staff" : "manager", managedBy: s.role === "staff" ? "" : s.managedBy } : s));
-  const changeManager = (staffName, mgrName) => onUpdateStaff(staffList.map(s => s.name === staffName ? { ...s, managedBy: mgrName } : s));
+  const removeStaff = (name) => onUpdateStaff(staffList.filter(s => s.name !== name));
+  const toggleRole = (name) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, role: s.role === "manager" ? "staff" : "manager" } : s));
   const changePassword = (name, pw) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, password: pw } : s));
 
   // Monthly entries
@@ -955,57 +1266,51 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
               </select>
               <button style={{ ...s.btn, whiteSpace: "nowrap" }} onClick={addStaff}>追加</button>
             </div>
-            <div style={{ display: "flex", gap: 10, marginBottom: newStaffRole === "staff" && managers.length > 0 ? 10 : 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-                <span style={{ fontSize: 12, color: palette.textDim, whiteSpace: "nowrap" }}>PW：</span>
-                <input style={{ ...s.input }} type="text" placeholder="パスワード" value={newStaffPassword} onChange={e => setNewStaffPassword(e.target.value)} />
-              </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 12, color: palette.textDim, whiteSpace: "nowrap" }}>PW：</span>
+              <input style={{ ...s.input }} type="text" placeholder="パスワード" value={newStaffPassword} onChange={e => setNewStaffPassword(e.target.value)} />
             </div>
-            {newStaffRole === "staff" && managers.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 12, color: palette.textDim, whiteSpace: "nowrap" }}>配属先：</span>
-                <select style={{ ...s.select }} value={newStaffManager} onChange={e => setNewStaffManager(e.target.value)}>
-                  <option value="">未配属</option>
-                  {managers.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                </select>
+          </div>
+
+          {/* Managers */}
+          <div style={s.card}>
+            <div style={s.cardTitle}>管理者（{managers.length}名）</div>
+            {managers.length === 0 ? <div style={{ color: palette.textDim, fontSize: 13 }}>管理者なし</div> : (
+              <div>
+                {managers.map(st => (
+                  <div key={st.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${palette.border}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontWeight: 600, color: palette.white }}>{st.name}</span>
+                      <span style={s.tag(palette.accentSoft, palette.accent)}>管理者</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
+                      <button onClick={() => toggleRole(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→スタッフ</button>
+                      <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Staff List grouped by manager */}
-          {managers.map(mgr => {
-            const myStaffs = staffList.filter(s => s.role === "staff" && s.managedBy === mgr.name);
+          {/* Staff */}
+          {(() => {
+            const staffs = staffList.filter(st => st.role === "staff");
             return (
-              <div key={mgr.name} style={s.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: palette.white }}>{mgr.name}</span>
-                    <span style={s.tag(palette.accentSoft, palette.accent)}>管理者</span>
-                    <span style={{ fontSize: 12, color: palette.textDim }}>{myStaffs.length}名</span>
-                    <input style={{ ...s.input, width: 80, padding: "3px 6px", fontSize: 11 }} type="text" value={mgr.password || "0000"} onChange={e => changePassword(mgr.name, e.target.value)} />
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => toggleRole(mgr.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→スタッフ</button>
-                    <button onClick={() => removeStaff(mgr.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
-                  </div>
-                </div>
-                {myStaffs.length === 0 ? (
-                  <div style={{ color: palette.textDim, fontSize: 12, paddingLeft: 16 }}>配下スタッフなし</div>
-                ) : (
-                  <div style={{ paddingLeft: 16 }}>
-                    {myStaffs.map(st => (
+              <div style={s.card}>
+                <div style={s.cardTitle}>スタッフ（{staffs.length}名）</div>
+                <div style={{ fontSize: 11, color: palette.textDim, marginBottom: 12 }}>※全スタッフの売上20%が管理者報酬（各管理者10%ずつ配分）</div>
+                {staffs.length === 0 ? <div style={{ color: palette.textDim, fontSize: 13 }}>スタッフなし</div> : (
+                  <div>
+                    {staffs.map(st => (
                       <div key={st.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${palette.border}` }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ color: palette.textDim }}>└</span>
                           <span style={{ fontWeight: 600, color: palette.white }}>{st.name}</span>
                           <span style={s.tag(palette.greenSoft, palette.green)}>スタッフ</span>
                         </div>
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                           <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
-                          <select style={{ ...s.select, width: 100, padding: "3px 6px", fontSize: 11 }} value={st.managedBy || ""} onChange={e => changeManager(st.name, e.target.value)}>
-                            <option value="">未配属</option>
-                            {managers.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                          </select>
                           <button onClick={() => toggleRole(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→管理者</button>
                           <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
                         </div>
@@ -1013,37 +1318,6 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                     ))}
                   </div>
                 )}
-              </div>
-            );
-          })}
-
-          {/* Unassigned staff */}
-          {(() => {
-            const unassigned = staffList.filter(s => s.role === "staff" && (!s.managedBy || !managers.some(m => m.name === s.managedBy)));
-            if (unassigned.length === 0) return null;
-            return (
-              <div style={s.card}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: palette.textDim }}>未配属</span>
-                  <span style={{ fontSize: 12, color: palette.textDim }}>{unassigned.length}名</span>
-                </div>
-                {unassigned.map(st => (
-                  <div key={st.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${palette.border}` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontWeight: 600, color: palette.white }}>{st.name}</span>
-                      <span style={s.tag(palette.greenSoft, palette.green)}>スタッフ</span>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
-                      <select style={{ ...s.select, width: 100, padding: "3px 6px", fontSize: 11 }} value={st.managedBy || ""} onChange={e => changeManager(st.name, e.target.value)}>
-                        <option value="">未配属</option>
-                        {managers.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                      </select>
-                      <button onClick={() => toggleRole(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→管理者</button>
-                      <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
-                    </div>
-                  </div>
-                ))}
               </div>
             );
           })()}
@@ -1134,10 +1408,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                         <td style={{ ...s.td, fontWeight: 600 }}>{e.customerName || "-"}</td>
                         <td style={s.td}>{e.staff}</td>
                         <td style={s.td}>
-                          <span style={s.tag(
-                            e.role === "メイン" ? palette.accentSoft : e.role === "ヘルプ" ? palette.greenSoft : e.role === "サクラ" ? palette.orangeSoft : palette.cardAlt,
-                            e.role === "メイン" ? palette.accent : e.role === "ヘルプ" ? palette.green : e.role === "サクラ" ? palette.orange : palette.textDim
-                          )}>{e.role}</span>
+                          <span style={s.tag(...roleTagColors(e.role))}>{e.role}</span>
                         </td>
                         <td style={{ ...s.td, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatYen(e.amount)}</td>
                         <td style={{ ...s.td, fontVariantNumeric: "tabular-nums", color: palette.textDim }}>{formatYen(Math.floor(e.amount / 1.1))}</td>
@@ -1206,7 +1477,68 @@ async function loadData(key) {
   return null;
 }
 
+// ─── Receipt Viewer (QR code destination) ───
+function ReceiptViewer({ data }) {
+  return (
+    <div style={{ fontFamily: font, background: "#fff", minHeight: "100vh", padding: "40px 16px", color: "#1a1a1a" }}>
+      <div style={{ maxWidth: 400, margin: "0 auto" }}>
+        <div style={{ textAlign: "center", borderBottom: "2px dashed #ccc", paddingBottom: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>領 収 書</div>
+          <div style={{ fontSize: 12, color: "#888" }}>{data.date}</div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{data.customer} 様</div>
+          <div style={{ fontSize: 11, color: "#888" }}>担当: {data.staff}</div>
+        </div>
+        <div style={{ borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "8px 0", marginBottom: 12 }}>
+          {(data.items || []).map((item, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+              <span>{item.name} {item.plan ? `${item.qty}名` : `×${item.qty}`}</span>
+              <span style={{ fontWeight: 600 }}>{formatYen(item.total)}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "#888" }}>小計</span><span>{formatYen(data.subtotal)}</span>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "#888" }}>消費税(10%)</span><span>{formatYen(data.tax)}</span>
+        </div>
+        {data.cardFee > 0 && (
+          <div style={{ fontSize: 13, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+            <span style={{ color: "#888" }}>カード手数料(10%)</span><span>{formatYen(data.cardFee)}</span>
+          </div>
+        )}
+        <div style={{ fontSize: 20, fontWeight: 700, display: "flex", justifyContent: "space-between", borderTop: "2px solid #1a1a1a", paddingTop: 8, marginTop: 8 }}>
+          <span>合計</span><span>{formatYen(data.amount)}</span>
+        </div>
+        <div style={{ textAlign: "right", marginTop: 4, marginBottom: 24 }}>
+          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: data.payMethod === "card" ? "#e8f0fe" : "#e8fce8", color: data.payMethod === "card" ? "#1a73e8" : "#1e7e34" }}>
+            {data.payMethod === "card" ? "クレジット" : "現金"}
+          </span>
+        </div>
+        <button onClick={() => window.print()} style={{
+          width: "100%", padding: "14px", borderRadius: 8, border: "none",
+          background: "#1a1a1a", color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: font,
+        }}>PDFで保存</button>
+        <style>{`@media print { button { display: none !important; } }`}</style>
+      </div>
+    </div>
+  );
+}
+
+function parseReceiptParam() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const r = params.get("receipt");
+    if (!r) return null;
+    return JSON.parse(decodeURIComponent(escape(atob(r))));
+  } catch (e) { return null; }
+}
+
 function App() {
+  const receiptData = useMemo(() => parseReceiptParam(), []);
+  if (receiptData) return <ReceiptViewer data={receiptData} />;
   const [user, setUser] = useState(null);
   const [entries, setEntries] = useState([]);
   const [openTabs, setOpenTabs] = useState([]);
