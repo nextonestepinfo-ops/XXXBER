@@ -1132,10 +1132,16 @@ function SalarySummary({ entries, staffName, managerName }) {
 // ─── Manager View ───
 function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList }) {
   const [tab, setTab] = useState("entry");
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   // Show own entries + staff entries only (not other managers)
   const staffNames = staffList.filter(s => s.role === "staff").map(s => s.name);
   const visibleNames = [staffName, ...staffNames];
-  const visibleEntries = entries.filter(e => visibleNames.includes(e.staff));
+  const allVisible = entries.filter(e => visibleNames.includes(e.staff));
+  const visibleEntries = allVisible.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
+  const months = [...new Set(allVisible.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
   const totalSales = visibleEntries.reduce((s, e) => s + e.amount, 0);
   const totalReceipts = visibleEntries.length;
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
@@ -1143,14 +1149,24 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
   return (
     <div style={s.container}>
       {tab !== "entry" && (
-        <div style={s.grid2}>
-          <div style={s.card}>
-            <div style={s.statLabel}>総売上</div>
-            <div style={s.statNum}>{formatYen(totalSales)}</div>
+        <div>
+          <div style={{ ...s.card, display: "flex", alignItems: "center", gap: 10, padding: "12px 20px" }}>
+            <span style={{ fontSize: 12, color: palette.textDim }}>月：</span>
+            <select style={{ ...s.select, width: 160 }} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}>
+              {months.length === 0 ? <option value={selectedMonth}>{selectedMonth.replace("-", "年") + "月"}</option> : months.map(m => (
+                <option key={m} value={m}>{m.replace("-", "年") + "月"}</option>
+              ))}
+            </select>
           </div>
-          <div style={s.card}>
-            <div style={s.statLabel}>伝票数</div>
-            <div style={s.statNum}>{totalReceipts}</div>
+          <div style={s.grid2}>
+            <div style={s.card}>
+              <div style={s.statLabel}>売上（{selectedMonth.replace("-", "年") + "月"}）</div>
+              <div style={s.statNum}>{formatYen(totalSales)}</div>
+            </div>
+            <div style={s.card}>
+              <div style={s.statLabel}>伝票数</div>
+              <div style={s.statNum}>{totalReceipts}</div>
+            </div>
           </div>
         </div>
       )}
@@ -1174,16 +1190,30 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
 // ─── Staff View ───
 function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu }) {
   const [tab, setTab] = useState("entry");
-  const myEntries = entries.filter(e => e.staff === staffName);
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const allMyEntries = entries.filter(e => e.staff === staffName);
+  const myEntries = allMyEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
+  const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
   const mySales = myEntries.reduce((s, e) => s + e.amount, 0);
   const myPay = myEntries.reduce((s, e) => s + Math.floor(Math.floor(e.amount / 1.1) * (ROLES[e.role] || 0)), 0);
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
 
   return (
     <div style={s.container}>
+      <div style={{ ...s.card, display: "flex", alignItems: "center", gap: 10, padding: "12px 20px" }}>
+        <span style={{ fontSize: 12, color: palette.textDim }}>月：</span>
+        <select style={{ ...s.select, width: 160 }} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}>
+          {months.length === 0 ? <option value={selectedMonth}>{selectedMonth.replace("-", "年") + "月"}</option> : months.map(m => (
+            <option key={m} value={m}>{m.replace("-", "年") + "月"}</option>
+          ))}
+        </select>
+      </div>
       <div style={s.grid2}>
         <div style={s.card}>
-          <div style={s.statLabel}>自分の売上</div>
+          <div style={s.statLabel}>自分の売上（{selectedMonth.replace("-", "年") + "月"}）</div>
           <div style={s.statNum}>{formatYen(mySales)}</div>
         </div>
         <div style={s.card}>
