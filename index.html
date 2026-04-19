@@ -148,8 +148,9 @@ const s = {
 
 // ─── Login ───
 function Login({ onLogin, staffList }) {
+  const roleOrder = { owner: 0, manager: 1, staff: 2 };
   const sorted = [...staffList].sort((a, b) => {
-    if (a.role !== b.role) return a.role === "manager" ? -1 : 1;
+    if (a.role !== b.role) return (roleOrder[a.role] ?? 9) - (roleOrder[b.role] ?? 9);
     return a.name.localeCompare(b.name, "ja");
   });
   const [name, setName] = useState(sorted.length > 0 ? sorted[0].name : "");
@@ -201,10 +202,11 @@ function Login({ onLogin, staffList }) {
         ) : (
           <select style={{ ...s.select, marginBottom: 12 }} value={name} onChange={e => { setName(e.target.value); setError(""); }}>
             {[...staffList].sort((a, b) => {
-              if (a.role !== b.role) return a.role === "manager" ? -1 : 1;
+              const ro = { owner: 0, manager: 1, staff: 2 };
+              if (a.role !== b.role) return (ro[a.role] ?? 9) - (ro[b.role] ?? 9);
               return a.name.localeCompare(b.name, "ja");
             }).map(st => (
-              <option key={st.name} value={st.name}>{st.name}（{st.role === "manager" ? "管理者" : "スタッフ"}）</option>
+              <option key={st.name} value={st.name}>{st.name}（{st.role === "owner" ? "オーナー" : st.role === "manager" ? "管理者" : "スタッフ"}）</option>
             ))}
           </select>
         )}
@@ -1167,8 +1169,364 @@ function PasswordChange({ staffName, staffList, onUpdateStaff }) {
   );
 }
 
+// ─── Advance Request (Staff) ───
+function AdvanceRequest({ staffName, advances, onUpdateAdvances, entries, selectedMonth }) {
+  const [amount, setAmount] = useState("");
+  const [msg, setMsg] = useState("");
+  const [msgColor, setMsgColor] = useState(palette.green);
+
+  const myAdvances = advances.filter(a => a.staff === staffName);
+  const monthAdvances = myAdvances.filter(a => a.requestDate && a.requestDate.startsWith(selectedMonth));
+  const pending = monthAdvances.filter(a => a.status === "pending" || a.status === "processed");
+  const received = monthAdvances.filter(a => a.status === "received");
+  const totalReceived = received.reduce((s, a) => s + a.amount, 0);
+  const totalPending = pending.reduce((s, a) => s + a.amount, 0);
+
+  // Calculate max advance = current month pay - already received - pending
+  const myPay = (entries || []).reduce((s, e) => s + Math.floor(Math.floor(e.amount / 1.1) * (ROLES[e.role] || 0)), 0);
+  const available = Math.max(0, myPay - totalReceived - totalPending);
+
+  const showMsg = (text, color) => {
+    setMsg(text);
+    setMsgColor(color || palette.green);
+    setTimeout(() => setMsg(""), 2500);
+  };
+
+  const submit = () => {
+    const amt = parseInt(amount);
+    if (!amt || amt <= 0) { showMsg("金額を入力してください", palette.red); return; }
+    if (amt > available) { showMsg(`申請可能額は${formatYen(available)}までです`, palette.red); return; }
+    const newAdv = {
+      id: crypto.randomUUID(),
+      staff: staffName,
+      amount: amt,
+      status: "pending",
+      requestDate: new Date().toISOString().slice(0, 19).replace("T", " "),
+    };
+    onUpdateAdvances([...advances, newAdv]);
+    setAmount("");
+    showMsg("申請しました", palette.green);
+  };
+
+  const cancelAdvance = (id) => {
+    onUpdateAdvances(advances.filter(a => a.id !== id));
+    showMsg("申請を取り消しました", palette.orange);
+  };
+
+  const confirmReceive = (id) => {
+    onUpdateAdvances(advances.map(a => a.id === id ? { ...a, status: "received", receivedDate: new Date().toISOString().slice(0, 19).replace("T", " ") } : a));
+  };
+
+  return (
+    <div style={{ ...s.card, marginTop: 12 }}>
+      <div style={s.cardTitle}>前借り申請</div>
+
+      {/* Summary */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 12 }}>
+        <div>
+          <span style={{ color: palette.textDim }}>報酬見込: </span>
+          <span style={{ fontWeight: 600 }}>{formatYen(myPay)}</span>
+        </div>
+        <div>
+          <span style={{ color: palette.textDim }}>受取済: </span>
+          <span style={{ fontWeight: 600, color: totalReceived > 0 ? palette.orange : palette.textDim }}>{formatYen(totalReceived)}</span>
+        </div>
+        <div>
+          <span style={{ color: palette.textDim }}>申請可能: </span>
+          <span style={{ fontWeight: 600, color: palette.green }}>{formatYen(available)}</span>
+        </div>
+      </div>
+
+      {/* Request form */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+        <input style={{ ...s.input, flex: 1, fontSize: 14 }} type="number" placeholder={`上限 ${formatYen(available)}`} value={amount} onChange={e => setAmount(e.target.value)} />
+        <button onClick={() => setAmount(String(available))} style={{ ...s.btnOutline, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", color: palette.green, borderColor: palette.green, opacity: available <= 0 ? 0.4 : 1 }}
+          disabled={available <= 0}>満額</button>
+        <button onClick={submit} style={{ ...s.btn, padding: "8px 16px", fontSize: 13, whiteSpace: "nowrap", opacity: available <= 0 ? 0.4 : 1 }}
+          disabled={available <= 0}>申請</button>
+      </div>
+      {msg && <div style={{ color: msgColor, fontSize: 12, marginBottom: 8 }}>{msg}</div>}
+
+      {/* Active requests */}
+      {pending.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 8 }}>進行中の申請</div>
+          {pending.map(a => (
+            <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${palette.border}`, fontSize: 13 }}>
+              <div>
+                <span style={{ fontWeight: 600 }}>{formatYen(a.amount)}</span>
+                <span style={{ color: palette.textDim, fontSize: 11, marginLeft: 8 }}>{a.requestDate}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {a.status === "pending" && (
+                  <>
+                    <span style={s.tag("rgba(249,115,22,0.15)", palette.orange)}>承認待ち</span>
+                    <button onClick={() => cancelAdvance(a.id)} style={{ ...s.btnOutline, padding: "3px 8px", fontSize: 10, color: palette.red, borderColor: palette.red }}>取消</button>
+                  </>
+                )}
+                {a.status === "processed" && (
+                  <>
+                    <span style={s.tag(palette.accentSoft, palette.accent)}>処理済み</span>
+                    <button onClick={() => confirmReceive(a.id)} style={{ ...s.btn, padding: "4px 12px", fontSize: 11, background: palette.green }}>受け取り</button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Received history */}
+      {received.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 8 }}>今月の受取履歴（合計: {formatYen(totalReceived)}）</div>
+          {received.map(a => (
+            <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 12, color: palette.textDim }}>
+              <span>{formatYen(a.amount)}　{a.requestDate}</span>
+              <span style={s.tag(palette.greenSoft, palette.green)}>受取済み</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Advance Notifications (Manager) ───
+function AdvanceNotifications({ advances, onUpdateAdvances, managerName }) {
+  const pending = advances.filter(a => a.status === "pending");
+
+  const processAdvance = (id) => {
+    onUpdateAdvances(advances.map(a => a.id === id ? { ...a, status: "processed", processedDate: new Date().toISOString().slice(0, 19).replace("T", " "), processedBy: managerName } : a));
+  };
+
+  if (pending.length === 0) return null;
+
+  return (
+    <div style={{ ...s.card, border: `1px solid ${palette.orange}`, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 18 }}>🔔</span>
+        <div style={s.cardTitle}>前借り申請（{pending.length}件）</div>
+      </div>
+      {pending.map(a => (
+        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${palette.border}`, fontSize: 13 }}>
+          <div>
+            <span style={{ fontWeight: 600, color: palette.white }}>{a.staff}</span>
+            <span style={{ fontWeight: 700, color: palette.accent, marginLeft: 10 }}>{formatYen(a.amount)}</span>
+            <div style={{ fontSize: 11, color: palette.textDim, marginTop: 2 }}>{a.requestDate}</div>
+          </div>
+          <button onClick={() => processAdvance(a.id)} style={{ ...s.btn, padding: "6px 16px", fontSize: 12, background: palette.orange }}>処理</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Advance History (Master) ───
+function AdvanceHistory({ advances }) {
+  const statusLabel = { pending: "承認待ち", processed: "処理済み", received: "受取済み" };
+  const statusColor = { pending: palette.orange, processed: palette.accent, received: palette.green };
+
+  return (
+    <div>
+      {advances.length === 0 ? (
+        <div style={{ ...s.card, textAlign: "center", color: palette.textDim }}>前借り履歴はありません</div>
+      ) : (
+        <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>申請日</th>
+                  <th style={s.th}>スタッフ</th>
+                  <th style={s.th}>金額</th>
+                  <th style={s.th}>状態</th>
+                  <th style={s.th}>処理者</th>
+                  <th style={s.th}>受取日</th>
+                </tr>
+              </thead>
+              <tbody>
+                {advances.slice().sort((a, b) => (b.requestDate || "").localeCompare(a.requestDate || "")).map(a => (
+                  <tr key={a.id}>
+                    <td style={s.td}>{a.requestDate || "-"}</td>
+                    <td style={{ ...s.td, fontWeight: 600 }}>{a.staff}</td>
+                    <td style={{ ...s.td, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatYen(a.amount)}</td>
+                    <td style={s.td}><span style={s.tag(statusColor[a.status] + "22", statusColor[a.status])}>{statusLabel[a.status]}</span></td>
+                    <td style={s.td}>{a.processedBy || "-"}</td>
+                    <td style={s.td}>{a.receivedDate || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Cashbox Manager (Master) ───
+function CashboxManager({ entries, advances, cashbox, onUpdateCashbox }) {
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [memo, setMemo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [txType, setTxType] = useState("in");
+
+  // Build unified ledger from all sources
+  const monthEntries = entries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
+  const monthAdvances = advances.filter(a => a.status === "received" && a.receivedDate && a.receivedDate.startsWith(selectedMonth));
+  const monthCashbox = cashbox.filter(c => c.date && c.date.startsWith(selectedMonth));
+
+  // Cash sales
+  const cashSales = monthEntries.filter(e => e.payMethod !== "card");
+  const totalCashIn = cashSales.reduce((s, e) => s + e.amount, 0);
+
+  // Card sales
+  const cardSales = monthEntries.filter(e => e.payMethod === "card");
+  const totalCardSales = cardSales.reduce((s, e) => s + e.amount, 0);
+
+  // Advance payouts (cash out)
+  const totalAdvanceOut = monthAdvances.reduce((s, a) => s + a.amount, 0);
+
+  // Manual entries
+  const manualIn = monthCashbox.filter(c => c.type === "in").reduce((s, c) => s + c.amount, 0);
+  const manualOut = monthCashbox.filter(c => c.type === "out").reduce((s, c) => s + c.amount, 0);
+
+  // Cash balance
+  const cashBalance = totalCashIn - totalAdvanceOut + manualIn - manualOut;
+
+  // Build chronological ledger
+  const ledger = [
+    ...cashSales.map(e => ({ date: e.datetime?.replace("T", " "), desc: `現金売上（${e.customerName || "-"}）担当:${e.staff}`, in: e.amount, out: 0, cat: "cash" })),
+    ...cardSales.map(e => ({ date: e.datetime?.replace("T", " "), desc: `カード売上（${e.customerName || "-"}）担当:${e.staff}`, in: e.amount, out: 0, cat: "card" })),
+    ...monthAdvances.map(a => ({ date: a.receivedDate, desc: `前借り支払（${a.staff}）`, in: 0, out: a.amount, cat: "cash" })),
+    ...monthCashbox.map(c => ({ date: c.date, desc: c.memo || (c.type === "in" ? "入金" : "出金"), in: c.type === "in" ? c.amount : 0, out: c.type === "out" ? c.amount : 0, cat: "cash" })),
+  ].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+  const months = [...new Set([
+    ...entries.map(e => e.datetime?.slice(0, 7)),
+    ...advances.filter(a => a.receivedDate).map(a => a.receivedDate.slice(0, 7)),
+    ...cashbox.map(c => c.date?.slice(0, 7)),
+  ].filter(Boolean))].sort().reverse();
+
+  const addManual = () => {
+    const amt = parseInt(amount);
+    if (!amt || amt <= 0) return;
+    onUpdateCashbox([...cashbox, {
+      id: crypto.randomUUID(),
+      type: txType,
+      amount: amt,
+      memo: memo.trim() || (txType === "in" ? "入金" : "出金"),
+      date: new Date().toISOString().slice(0, 19).replace("T", " "),
+    }]);
+    setAmount("");
+    setMemo("");
+  };
+
+  return (
+    <div>
+      {/* Month selector */}
+      <div style={{ ...s.card, display: "flex", gap: 10, alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: palette.textDim }}>月：</span>
+        <select style={{ ...s.select, width: 160 }} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}>
+          {months.length === 0 ? <option value={selectedMonth}>{selectedMonth.replace("-", "年") + "月"}</option> : months.map(m => (
+            <option key={m} value={m}>{m.replace("-", "年") + "月"}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Summary cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+        <div style={{ ...s.card, borderLeft: `3px solid ${palette.green}` }}>
+          <div style={{ fontSize: 11, color: palette.textDim }}>金庫残高（現金）</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: palette.green, fontVariantNumeric: "tabular-nums" }}>{formatYen(cashBalance)}</div>
+          <div style={{ fontSize: 10, color: palette.textDim, marginTop: 4 }}>
+            入金 {formatYen(totalCashIn + manualIn)} / 出金 {formatYen(totalAdvanceOut + manualOut)}
+          </div>
+        </div>
+        <div style={{ ...s.card, borderLeft: `3px solid ${palette.accent}` }}>
+          <div style={{ fontSize: 11, color: palette.textDim }}>カード売上（別管理）</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: palette.accent, fontVariantNumeric: "tabular-nums" }}>{formatYen(totalCardSales)}</div>
+          <div style={{ fontSize: 10, color: palette.textDim, marginTop: 4 }}>
+            {cardSales.length}件
+          </div>
+        </div>
+      </div>
+
+      {/* Manual entry */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>手動入出金</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <select style={{ ...s.select, width: 80 }} value={txType} onChange={e => setTxType(e.target.value)}>
+            <option value="in">入金</option>
+            <option value="out">出金</option>
+          </select>
+          <input style={{ ...s.input, flex: 1 }} type="number" placeholder="金額" value={amount} onChange={e => setAmount(e.target.value)} />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input style={{ ...s.input, flex: 1 }} placeholder="メモ（任意）" value={memo} onChange={e => setMemo(e.target.value)} />
+          <button onClick={addManual} style={{ ...s.btn, padding: "8px 16px", fontSize: 13, whiteSpace: "nowrap" }}>登録</button>
+        </div>
+      </div>
+
+      {/* Ledger */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>入出金履歴（{selectedMonth.replace("-", "年") + "月"}）</div>
+        {ledger.length === 0 ? (
+          <div style={{ color: palette.textDim, fontSize: 13 }}>データなし</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>日時</th>
+                  <th style={s.th}>内容</th>
+                  <th style={s.th}>種別</th>
+                  <th style={{ ...s.th, textAlign: "right" }}>入金</th>
+                  <th style={{ ...s.th, textAlign: "right" }}>出金</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ledger.map((l, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, fontSize: 11, whiteSpace: "nowrap" }}>{l.date || "-"}</td>
+                    <td style={{ ...s.td, fontSize: 12 }}>{l.desc}</td>
+                    <td style={s.td}>
+                      <span style={s.tag(l.cat === "card" ? palette.accentSoft : palette.greenSoft, l.cat === "card" ? palette.accent : palette.green)}>
+                        {l.cat === "card" ? "カード" : "現金"}
+                      </span>
+                    </td>
+                    <td style={{ ...s.td, textAlign: "right", color: l.in > 0 ? palette.green : palette.textDim, fontWeight: l.in > 0 ? 600 : 400, fontVariantNumeric: "tabular-nums" }}>
+                      {l.in > 0 ? formatYen(l.in) : "-"}
+                    </td>
+                    <td style={{ ...s.td, textAlign: "right", color: l.out > 0 ? palette.red : palette.textDim, fontWeight: l.out > 0 ? 600 : 400, fontVariantNumeric: "tabular-nums" }}>
+                      {l.out > 0 ? formatYen(l.out) : "-"}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: `2px solid ${palette.border}` }}>
+                  <td colSpan={3} style={{ ...s.td, fontWeight: 700 }}>合計</td>
+                  <td style={{ ...s.td, textAlign: "right", fontWeight: 700, color: palette.green, fontVariantNumeric: "tabular-nums" }}>
+                    {formatYen(ledger.reduce((s, l) => s + l.in, 0))}
+                  </td>
+                  <td style={{ ...s.td, textAlign: "right", fontWeight: 700, color: palette.red, fontVariantNumeric: "tabular-nums" }}>
+                    {formatYen(ledger.reduce((s, l) => s + l.out, 0))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Manager View ───
-function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff }) {
+function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
@@ -1209,9 +1567,65 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
         </div>
       )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["entry", "list", "salary"].map(t => (
+        {["entry", "list", "salary"].map(t => {
+          const pendingAdv = t === "salary" ? advances.filter(a => a.status === "pending").length : 0;
+          return (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
             {{ entry: "伝票入力", list: "伝票一覧", salary: "給与計算" }[t]}
+            {t === "entry" && activeCount > 0 && (
+              <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
+            )}
+            {pendingAdv > 0 && (
+              <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{pendingAdv}</span>
+            )}
+          </button>
+          );
+        })}
+      </div>
+      {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} isManager openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
+      {tab === "list" && <ReceiptTable entries={visibleEntries} canDelete onDelete={onDelete} />}
+      {tab === "salary" && (
+        <>
+          <AdvanceNotifications advances={advances} onUpdateAdvances={onUpdateAdvances} managerName={staffName} />
+          <SalarySummary entries={visibleEntries} managerName={staffName} />
+        </>
+      )}
+      <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
+    </div>
+  );
+}
+
+// ─── Owner View ───
+function OwnerView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff }) {
+  const [tab, setTab] = useState("entry");
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const allMyEntries = entries.filter(e => e.staff === staffName);
+  const myEntries = allMyEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
+  const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
+  const mySales = myEntries.reduce((s, e) => s + e.amount, 0);
+  const activeCount = openTabs.filter(t => t.staff === staffName).length;
+
+  return (
+    <div style={s.container}>
+      <div style={{ ...s.card, display: "flex", alignItems: "center", gap: 10, padding: "12px 20px" }}>
+        <span style={{ fontSize: 12, color: palette.textDim }}>月：</span>
+        <select style={{ ...s.select, width: 160 }} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}>
+          {months.length === 0 ? <option value={selectedMonth}>{selectedMonth.replace("-", "年") + "月"}</option> : months.map(m => (
+            <option key={m} value={m}>{m.replace("-", "年") + "月"}</option>
+          ))}
+        </select>
+      </div>
+      <div style={s.card}>
+        <div style={s.statLabel}>自分の売上（{selectedMonth.replace("-", "年") + "月"}）</div>
+        <div style={s.statNum}>{formatYen(mySales)}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {["entry", "list"].map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
+            {{ entry: "伝票入力", list: "自分の伝票" }[t]}
             {t === "entry" && activeCount > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
             )}
@@ -1219,15 +1633,14 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
         ))}
       </div>
       {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} isManager openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
-      {tab === "list" && <ReceiptTable entries={visibleEntries} canDelete onDelete={onDelete} />}
-      {tab === "salary" && <SalarySummary entries={visibleEntries} managerName={staffName} />}
+      {tab === "list" && <ReceiptTable entries={myEntries} />}
       <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
     </div>
   );
 }
 
 // ─── Staff View ───
-function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff }) {
+function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
@@ -1238,7 +1651,10 @@ function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
   const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
   const mySales = myEntries.reduce((s, e) => s + e.amount, 0);
   const myPay = myEntries.reduce((s, e) => s + Math.floor(Math.floor(e.amount / 1.1) * (ROLES[e.role] || 0)), 0);
+  const myReceivedAdvances = advances.filter(a => a.staff === staffName && a.status === "received" && a.requestDate && a.requestDate.startsWith(selectedMonth)).reduce((s, a) => s + a.amount, 0);
+  const myNetPay = myPay - myReceivedAdvances;
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
+  const pending = advances.filter(a => a.staff === staffName && (a.status === "pending" || a.status === "processed") && a.requestDate && a.requestDate.startsWith(selectedMonth));
 
   return (
     <div style={s.container}>
@@ -1256,29 +1672,39 @@ function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
           <div style={s.statNum}>{formatYen(mySales)}</div>
         </div>
         <div style={s.card}>
-          <div style={s.statLabel}>今月の報酬（見込）</div>
+          <div style={s.statLabel}>報酬（見込）</div>
           <div style={{ ...s.statNum, color: palette.green }}>{formatYen(myPay)}</div>
+          {myReceivedAdvances > 0 && (
+            <div style={{ fontSize: 11, color: palette.textDim, marginTop: 4 }}>
+              前借り済: <span style={{ color: palette.orange }}>{formatYen(myReceivedAdvances)}</span>
+              　残り: <span style={{ color: palette.green, fontWeight: 700 }}>{formatYen(myNetPay)}</span>
+            </div>
+          )}
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["entry", "list"].map(t => (
+        {["entry", "list", "advance"].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
-            {{ entry: "伝票入力", list: "自分の伝票" }[t]}
+            {{ entry: "伝票入力", list: "自分の伝票", advance: "前借り" }[t]}
             {t === "entry" && activeCount > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
+            )}
+            {t === "advance" && pending.length > 0 && (
+              <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{pending.length}</span>
             )}
           </button>
         ))}
       </div>
       {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
       {tab === "list" && <ReceiptTable entries={myEntries} />}
+      {tab === "advance" && <AdvanceRequest staffName={staffName} advances={advances} onUpdateAdvances={onUpdateAdvances} entries={myEntries} selectedMonth={selectedMonth} />}
       <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
     </div>
   );
 }
 
 // ─── Master View ───
-function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onDeleteEntry }) {
+function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onDeleteEntry, advances, onUpdateAdvances, cashbox, onUpdateCashbox }) {
   const [tab, setTab] = useState("staff");
   const [newStaffName, setNewStaffName] = useState("");
   const [newStaffRole, setNewStaffRole] = useState("staff");
@@ -1301,7 +1727,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
     setNewStaffPassword("0000");
   };
   const removeStaff = (name) => onUpdateStaff(staffList.filter(s => s.name !== name));
-  const toggleRole = (name) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, role: s.role === "manager" ? "staff" : "manager" } : s));
+  const changeRole = (name, newRole) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, role: newRole } : s));
   const changePassword = (name, pw) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, password: pw } : s));
 
   // Monthly entries
@@ -1330,9 +1756,12 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   return (
     <div style={s.container}>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["staff", "menu", "receipts"].map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}) }}>
-            {{ staff: "スタッフ管理", menu: "メニュー管理", receipts: "伝票一覧" }[t]}
+        {["staff", "menu", "receipts", "cashbox", "advances"].map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
+            {{ staff: "スタッフ管理", menu: "メニュー管理", receipts: "伝票一覧", cashbox: "金庫管理", advances: "前借り履歴" }[t]}
+            {t === "advances" && advances.filter(a => a.status !== "received").length > 0 && (
+              <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{advances.filter(a => a.status !== "received").length}</span>
+            )}
           </button>
         ))}
       </div>
@@ -1346,6 +1775,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
               <select style={{ ...s.select, width: 120 }} value={newStaffRole} onChange={e => setNewStaffRole(e.target.value)}>
                 <option value="staff">スタッフ</option>
                 <option value="manager">管理者</option>
+                <option value="owner">オーナー</option>
               </select>
               <button style={{ ...s.btn, whiteSpace: "nowrap" }} onClick={addStaff}>追加</button>
             </div>
@@ -1354,6 +1784,34 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
               <input style={{ ...s.input }} type="text" placeholder="パスワード" value={newStaffPassword} onChange={e => setNewStaffPassword(e.target.value)} />
             </div>
           </div>
+
+          {/* Owners */}
+          {(() => {
+            const owners = staffList.filter(st => st.role === "owner");
+            return owners.length > 0 ? (
+              <div style={s.card}>
+                <div style={s.cardTitle}>オーナー（{owners.length}名）</div>
+                <div style={{ fontSize: 11, color: palette.textDim, marginBottom: 12 }}>※伝票入力のみ。給与計算・歩合の対象外</div>
+                {owners.map(st => (
+                  <div key={st.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${palette.border}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontWeight: 600, color: palette.white }}>{st.name}</span>
+                      <span style={s.tag("rgba(249,115,22,0.15)", palette.orange)}>オーナー</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
+                      <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="owner" onChange={e => changeRole(st.name, e.target.value)}>
+                        <option value="owner">オーナー</option>
+                        <option value="manager">管理者</option>
+                        <option value="staff">スタッフ</option>
+                      </select>
+                      <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null;
+          })()}
 
           {/* Managers */}
           <div style={s.card}>
@@ -1368,7 +1826,11 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
-                      <button onClick={() => toggleRole(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→スタッフ</button>
+                      <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="manager" onChange={e => changeRole(st.name, e.target.value)}>
+                        <option value="owner">オーナー</option>
+                        <option value="manager">管理者</option>
+                        <option value="staff">スタッフ</option>
+                      </select>
                       <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
                     </div>
                   </div>
@@ -1394,7 +1856,11 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                         </div>
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                           <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
-                          <button onClick={() => toggleRole(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>→管理者</button>
+                          <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="staff" onChange={e => changeRole(st.name, e.target.value)}>
+                            <option value="owner">オーナー</option>
+                            <option value="manager">管理者</option>
+                            <option value="staff">スタッフ</option>
+                          </select>
                           <button onClick={() => removeStaff(st.name)} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11, color: palette.red, borderColor: palette.red }}>削除</button>
                         </div>
                       </div>
@@ -1461,6 +1927,33 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
               ))}
             </select>
             <div style={{ flex: 1 }} />
+            <button onClick={() => {
+              const header = "日時,お客様,担当者,決済,金額,税抜,TAX,カード手数料";
+              const rows = monthEntries.slice().sort((a, b) => b.datetime.localeCompare(a.datetime)).map(e => {
+                const taxEx = Math.floor(e.amount / 1.1);
+                const tax = e.amount - taxEx;
+                return [
+                  e.datetime.replace("T", " "),
+                  e.customerName || "",
+                  e.staff,
+                  e.payMethod === "card" ? "クレジット" : "現金",
+                  e.amount,
+                  taxEx,
+                  tax,
+                  e.cardFee || 0,
+                ].join(",");
+              });
+              const csv = "\uFEFF" + [header, ...rows].join("\n");
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `売上データ_${selectedMonth}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }} style={{ ...s.btnOutline, padding: "6px 14px", fontSize: 12, color: palette.green, borderColor: palette.green }}>
+              CSV出力
+            </button>
             <div style={{ fontSize: 14, fontWeight: 700, color: palette.white }}>
               {monthEntries.length}件 / {formatYen(monthTotal)}
             </div>
@@ -1507,6 +2000,14 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
           )}
         </div>
       )}
+
+      {tab === "cashbox" && (
+        <CashboxManager entries={entries} advances={advances} cashbox={cashbox} onUpdateCashbox={onUpdateCashbox} />
+      )}
+
+      {tab === "advances" && (
+        <AdvanceHistory advances={advances} />
+      )}
     </div>
   );
 }
@@ -1517,6 +2018,8 @@ const STORAGE_KEY = "sales-manager-entries";
 const TABS_STORAGE_KEY = "sales-manager-open-tabs";
 const STAFF_STORAGE_KEY = "sales-manager-staff";
 const MENU_STORAGE_KEY = "sales-manager-menu";
+const ADVANCE_STORAGE_KEY = "sales-manager-advances";
+const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
 
 async function saveData(key, data) {
   const json = JSON.stringify(data);
@@ -1622,6 +2125,8 @@ function App() {
   const [openTabs, setOpenTabs] = useState([]);
   const [staffList, setStaffList] = useState(DEFAULT_STAFF);
   const [menu, setMenu] = useState(DEFAULT_MENU);
+  const [advances, setAdvances] = useState([]);
+  const [cashbox, setCashbox] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
 
@@ -1631,11 +2136,15 @@ function App() {
       loadData(TABS_STORAGE_KEY),
       loadData(STAFF_STORAGE_KEY),
       loadData(MENU_STORAGE_KEY),
-    ]).then(([e, t, st, m]) => {
+      loadData(ADVANCE_STORAGE_KEY),
+      loadData(CASHBOX_STORAGE_KEY),
+    ]).then(([e, t, st, m, adv, cb]) => {
       if (e) setEntries(e);
       if (t) setOpenTabs(t);
       if (st) setStaffList(st);
       if (m) setMenu(m);
+      if (adv) setAdvances(adv);
+      if (cb) setCashbox(cb);
       setLoaded(true);
     });
   }, []);
@@ -1671,6 +2180,16 @@ function App() {
     await saveData(MENU_STORAGE_KEY, m);
     showSaved();
   };
+  const updateAdvances = async (list) => {
+    setAdvances(list);
+    await saveData(ADVANCE_STORAGE_KEY, list);
+    showSaved();
+  };
+  const updateCashbox = async (list) => {
+    setCashbox(list);
+    await saveData(CASHBOX_STORAGE_KEY, list);
+    showSaved();
+  };
 
   if (!loaded) return (
     <div style={{ ...s.loginWrap }}>
@@ -1689,17 +2208,19 @@ function App() {
           {saveStatus && (
             <span style={{ fontSize: 11, color: palette.green, transition: "opacity .3s" }}>✓ {saveStatus}</span>
           )}
-          <span style={s.badge(user.role === "master" ? "orange" : user.role === "manager" ? "blue" : "green")}>
-            {user.role === "master" ? "マスター" : user.role === "manager" ? `管理者 (${user.name})` : user.name}
+          <span style={s.badge(user.role === "master" ? "orange" : user.role === "owner" ? "orange" : user.role === "manager" ? "blue" : "green")}>
+            {user.role === "master" ? "マスター" : user.role === "owner" ? `オーナー (${user.name})` : user.role === "manager" ? `管理者 (${user.name})` : user.name}
           </span>
           <button style={{ ...s.btnOutline, padding: "6px 12px", fontSize: 12 }} onClick={() => setUser(null)}>ログアウト</button>
         </div>
       </div>
       {user.role === "master"
-        ? <MasterView staffList={staffList} onUpdateStaff={updateStaff} menu={menu} onUpdateMenu={updateMenu} entries={entries} onDeleteEntry={deleteEntry} />
-        : user.role === "manager"
-          ? <ManagerView entries={entries} onAdd={addEntry} onDelete={deleteEntry} staffName={user.name} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} />
-          : <StaffView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} />
+        ? <MasterView staffList={staffList} onUpdateStaff={updateStaff} menu={menu} onUpdateMenu={updateMenu} entries={entries} onDeleteEntry={deleteEntry} advances={advances} onUpdateAdvances={updateAdvances} cashbox={cashbox} onUpdateCashbox={updateCashbox} />
+        : user.role === "owner"
+          ? <OwnerView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} />
+          : user.role === "manager"
+            ? <ManagerView entries={entries} onAdd={addEntry} onDelete={deleteEntry} staffName={user.name} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} />
+            : <StaffView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} />
       }
     </div>
   );
