@@ -146,6 +146,159 @@ const s = {
   tag: (bg, fg) => ({ display: "inline-block", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: bg, color: fg }),
 };
 
+// ─── Shift Panel (出勤管理) ───
+function ShiftPanel({ staffName, shifts, onUpdateShifts, staffList, userRole }) {
+  const [shiftDate, setShiftDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [startTime, setStartTime] = useState("20:00");
+  const [goal, setGoal] = useState("");
+  const [msg, setMsg] = useState("");
+  const canSeeGoal = userRole === "owner" || userRole === "manager" || userRole === "master";
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const myShifts = shifts.filter(sh => sh.staff === staffName && sh.date >= today).sort((a, b) => a.date.localeCompare(b.date));
+
+  const next7 = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    next7.push(d.toISOString().slice(0, 10));
+  }
+
+  const submitShift = () => {
+    if (!shiftDate) return;
+    if (shifts.some(sh => sh.staff === staffName && sh.date === shiftDate)) {
+      setMsg("この日は既に提出済みです");
+      setTimeout(() => setMsg(""), 2000);
+      return;
+    }
+    onUpdateShifts([...shifts, {
+      id: crypto.randomUUID(),
+      staff: staffName,
+      date: shiftDate,
+      startTime,
+      goal: parseInt(goal) || 0,
+      submittedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
+    }]);
+    setMsg("提出しました");
+    setGoal("");
+    setTimeout(() => setMsg(""), 2000);
+  };
+
+  const cancelShift = (id) => {
+    onUpdateShifts(shifts.filter(sh => sh.id !== id));
+  };
+
+  const roleLabel = (name) => {
+    const st = staffList.find(x => x.name === name);
+    return st ? (st.role === "owner" ? "オーナー" : st.role === "manager" ? "管理者" : "スタッフ") : "";
+  };
+  const roleColor = (name) => {
+    const st = staffList.find(x => x.name === name);
+    if (!st) return [palette.greenSoft, palette.green];
+    if (st.role === "owner") return ["rgba(249,115,22,0.15)", palette.orange];
+    if (st.role === "manager") return [palette.accentSoft, palette.accent];
+    return [palette.greenSoft, palette.green];
+  };
+
+  return (
+    <div>
+      {/* Submit shift */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>出勤予定を提出</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <input style={{ ...s.input, flex: 1 }} type="date" value={shiftDate} onChange={e => setShiftDate(e.target.value)} />
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ fontSize: 11, color: palette.textDim }}>開始</span>
+            <input style={{ ...s.input, width: 100 }} type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
+          </div>
+        </div>
+        {canSeeGoal && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontSize: 11, color: palette.textDim, whiteSpace: "nowrap" }}>目標金額</span>
+            <input style={{ ...s.input, flex: 1 }} type="number" placeholder="¥0" value={goal} onChange={e => setGoal(e.target.value)} />
+          </div>
+        )}
+        <button onClick={submitShift} style={{ ...s.btn, width: "100%", padding: "10px", fontSize: 13 }}>提出</button>
+        {msg && <div style={{ color: palette.green, fontSize: 12, marginTop: 8 }}>{msg}</div>}
+      </div>
+
+      {/* My shifts */}
+      {myShifts.length > 0 && (
+        <div style={s.card}>
+          <div style={s.cardTitle}>自分の出勤予定</div>
+          {myShifts.map(sh => (
+            <div key={sh.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${palette.border}`, fontSize: 13 }}>
+              <div>
+                <span style={{ fontWeight: 600 }}>{sh.date}</span>
+                <span style={{ color: palette.textDim, marginLeft: 8 }}>{sh.startTime}〜</span>
+                {canSeeGoal && sh.goal > 0 && <span style={{ color: palette.accent, marginLeft: 8, fontSize: 11 }}>目標 {formatYen(sh.goal)}</span>}
+              </div>
+              <button onClick={() => cancelShift(sh.id)} style={{ ...s.btnOutline, padding: "3px 8px", fontSize: 10, color: palette.red, borderColor: palette.red }}>取消</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Weekly schedule */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>今後7日間の出勤予定</div>
+        {next7.map(date => {
+          const dayShifts = shifts.filter(sh => sh.date === date).sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+          const dayOfWeek = ["日", "月", "火", "水", "木", "金", "土"][new Date(date).getDay()];
+          const isToday = date === today;
+          return (
+            <div key={date} style={{ padding: "8px 0", borderBottom: `1px solid ${palette.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: isToday ? palette.accent : palette.white, marginBottom: 4 }}>
+                {date.slice(5)} ({dayOfWeek}){isToday ? " ← 今日" : ""}
+              </div>
+              {dayShifts.length === 0 ? (
+                <div style={{ fontSize: 11, color: palette.textDim, paddingLeft: 8 }}>予定なし</div>
+              ) : (
+                dayShifts.map(sh => (
+                  <div key={sh.id} style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 8, fontSize: 12, padding: "2px 0 2px 8px" }}>
+                    <span style={{ fontWeight: 600 }}>{sh.staff}</span>
+                    <span style={s.tag(...roleColor(sh.staff))}>{roleLabel(sh.staff)}</span>
+                    <span style={{ color: palette.textDim }}>{sh.startTime}〜</span>
+                    {canSeeGoal && sh.goal > 0 && <span style={{ color: palette.accent, fontSize: 10 }}>{formatYen(sh.goal)}</span>}
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── NumPad ───
+function NumPad({ value, onChange, maxLen }) {
+  const max = maxLen || 4;
+  const press = (n) => { if (value.length < max) onChange(value + n); };
+  const del = () => onChange(value.slice(0, -1));
+  const clear = () => onChange("");
+  const btnStyle = { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: 48, borderRadius: 10, border: `1px solid ${palette.border}`, background: palette.cardAlt, color: palette.white, fontSize: 20, fontWeight: 600, fontFamily: font, cursor: "pointer" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 16, height: 32, alignItems: "center" }}>
+        {Array.from({ length: max }).map((_, i) => (
+          <div key={i} style={{ width: 14, height: 14, borderRadius: 99, background: i < value.length ? palette.accent : palette.border, transition: "background .15s" }} />
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        {[1,2,3,4,5,6,7,8,9].map(n => (
+          <button key={n} onClick={() => press(String(n))} style={btnStyle}>{n}</button>
+        ))}
+        <button onClick={clear} style={{ ...btnStyle, fontSize: 13, color: palette.textDim }}>AC</button>
+        <button onClick={() => press("0")} style={btnStyle}>0</button>
+        <button onClick={del} style={{ ...btnStyle, fontSize: 16, color: palette.orange }}>←</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Login ───
 function Login({ onLogin, staffList }) {
   const roleOrder = { owner: 0, manager: 1, staff: 2 };
@@ -187,11 +340,9 @@ function Login({ onLogin, staffList }) {
       <div style={s.loginWrap}>
         <div style={s.loginCard}>
           <div style={{ fontSize: 22, fontWeight: 700, color: palette.white, marginBottom: 24 }}>マスター管理</div>
-          <input style={{ ...s.input, marginBottom: 12 }} type="password" placeholder="パスワード" value={masterPw}
-            onChange={e => { setMasterPw(e.target.value); setMasterError(""); }}
-            onKeyDown={e => { if (e.key === "Enter") handleMaster(); }} />
-          {masterError && <div style={{ color: palette.red, fontSize: 12, marginBottom: 12 }}>{masterError}</div>}
-          <button style={{ ...s.btn, width: "100%", background: palette.orange }} onClick={handleMaster}>ログイン</button>
+          <NumPad value={masterPw} onChange={v => { setMasterPw(v); setMasterError(""); }} maxLen={4} />
+          {masterError && <div style={{ color: palette.red, fontSize: 12, marginBottom: 12, marginTop: 12 }}>{masterError}</div>}
+          <button style={{ ...s.btn, width: "100%", background: palette.orange, marginTop: 12 }} onClick={handleMaster}>ログイン</button>
           <button style={{ ...s.btnOutline, width: "100%", marginTop: 10 }} onClick={() => { setMasterMode(false); setMasterPw(""); setMasterError(""); }}>戻る</button>
         </div>
       </div>
@@ -216,11 +367,9 @@ function Login({ onLogin, staffList }) {
             ))}
           </select>
         )}
-        <input style={{ ...s.input, marginBottom: 12 }} type="password" placeholder="パスワード" value={password}
-          onChange={e => { setPassword(e.target.value); setError(""); }}
-          onKeyDown={e => { if (e.key === "Enter") handleLogin(); }} />
-        {error && <div style={{ color: palette.red, fontSize: 12, marginBottom: 12 }}>{error}</div>}
-        <button style={{ ...s.btn, width: "100%", marginBottom: 16 }} onClick={handleLogin}>ログイン</button>
+        <NumPad value={password} onChange={v => { setPassword(v); setError(""); }} maxLen={4} />
+        {error && <div style={{ color: palette.red, fontSize: 12, marginBottom: 12, marginTop: 12 }}>{error}</div>}
+        <button style={{ ...s.btn, width: "100%", marginBottom: 16, marginTop: 12 }} onClick={handleLogin}>ログイン</button>
         <button style={{ ...s.btnOutline, width: "100%", borderColor: palette.orange, color: palette.orange }} onClick={() => setMasterMode(true)}>マスター管理</button>
       </div>
     </div>
@@ -1152,8 +1301,8 @@ function PasswordChange({ staffName, staffList, onUpdateStaff }) {
   const [msg, setMsg] = useState("");
 
   const changePw = () => {
-    if (!newPw.trim()) return;
-    onUpdateStaff(staffList.map(st => st.name === staffName ? { ...st, password: newPw.trim() } : st));
+    if (newPw.length !== 4) { setMsg("4桁で入力してください"); return; }
+    onUpdateStaff(staffList.map(st => st.name === staffName ? { ...st, password: newPw } : st));
     setNewPw("");
     setMsg("変更しました");
     setTimeout(() => { setMsg(""); setShowPw(false); }, 1500);
@@ -1164,13 +1313,14 @@ function PasswordChange({ staffName, staffList, onUpdateStaff }) {
   );
 
   return (
-    <div style={{ ...s.card, padding: 12, marginBottom: 12 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input style={{ ...s.input, flex: 1, padding: "6px 10px", fontSize: 13 }} type="text" placeholder="新しいパスワード" value={newPw} onChange={e => { setNewPw(e.target.value); setMsg(""); }} />
-        <button onClick={changePw} style={{ ...s.btn, padding: "6px 14px", fontSize: 12, whiteSpace: "nowrap" }}>変更</button>
-        <button onClick={() => { setShowPw(false); setNewPw(""); setMsg(""); }} style={{ ...s.btnOutline, padding: "6px 10px", fontSize: 12 }}>×</button>
+    <div style={{ ...s.card, padding: 16, marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: palette.white }}>新しいパスワード（4桁）</span>
+        <button onClick={() => { setShowPw(false); setNewPw(""); setMsg(""); }} style={{ ...s.btnOutline, padding: "4px 10px", fontSize: 11 }}>×</button>
       </div>
-      {msg && <div style={{ color: palette.green, fontSize: 12, marginTop: 6 }}>{msg}</div>}
+      <NumPad value={newPw} onChange={v => { setNewPw(v); setMsg(""); }} maxLen={4} />
+      <button onClick={changePw} style={{ ...s.btn, width: "100%", padding: "10px", fontSize: 13, marginTop: 12, opacity: newPw.length === 4 ? 1 : 0.4 }}>変更</button>
+      {msg && <div style={{ color: msg === "変更しました" ? palette.green : palette.red, fontSize: 12, marginTop: 6, textAlign: "center" }}>{msg}</div>}
     </div>
   );
 }
@@ -1540,7 +1690,7 @@ function CashboxManager({ entries, advances, cashbox, onUpdateCashbox }) {
 }
 
 // ─── Manager View ───
-function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances }) {
+function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances, shifts, onUpdateShifts }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
@@ -1581,11 +1731,11 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
         </div>
       )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["entry", "list", "salary"].map(t => {
+        {["entry", "list", "salary", "shift"].map(t => {
           const pendingAdv = t === "salary" ? advances.filter(a => a.status === "pending").length : 0;
           return (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
-            {{ entry: "伝票入力", list: "伝票一覧", salary: "給与計算" }[t]}
+            {{ entry: "伝票入力", list: "伝票一覧", salary: "給与計算", shift: "出勤" }[t]}
             {t === "entry" && activeCount > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
             )}
@@ -1604,13 +1754,14 @@ function ManagerView({ entries, onAdd, onDelete, staffName, openTabs, onUpdateTa
           <SalarySummary entries={visibleEntries} managerName={staffName} />
         </>
       )}
+      {tab === "shift" && <ShiftPanel staffName={staffName} shifts={shifts} onUpdateShifts={onUpdateShifts} staffList={staffList} userRole="manager" />}
       <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
     </div>
   );
 }
 
 // ─── Owner View ───
-function OwnerView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff }) {
+function OwnerView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, shifts, onUpdateShifts }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
@@ -1637,9 +1788,9 @@ function OwnerView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
         <div style={s.statNum}>{formatYen(mySales)}</div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["entry", "list"].map(t => (
+        {["entry", "list", "shift"].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
-            {{ entry: "伝票入力", list: "自分の伝票" }[t]}
+            {{ entry: "伝票入力", list: "自分の伝票", shift: "出勤" }[t]}
             {t === "entry" && activeCount > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
             )}
@@ -1648,13 +1799,14 @@ function OwnerView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
       </div>
       {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} isManager openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
       {tab === "list" && <ReceiptTable entries={myEntries} />}
+      {tab === "shift" && <ShiftPanel staffName={staffName} shifts={shifts} onUpdateShifts={onUpdateShifts} staffList={staffList} userRole="owner" />}
       <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
     </div>
   );
 }
 
 // ─── Staff View ───
-function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances }) {
+function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, staffList, onUpdateStaff, advances, onUpdateAdvances, shifts, onUpdateShifts }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
@@ -1697,9 +1849,9 @@ function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["entry", "list", "advance"].map(t => (
+        {["entry", "list", "advance", "shift"].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
-            {{ entry: "伝票入力", list: "自分の伝票", advance: "前借り" }[t]}
+            {{ entry: "伝票入力", list: "自分の伝票", advance: "前借り", shift: "出勤" }[t]}
             {t === "entry" && activeCount > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeCount}</span>
             )}
@@ -1712,13 +1864,14 @@ function StaffView({ entries, staffName, onAdd, openTabs, onUpdateTabs, menu, st
       {tab === "entry" && <EntryForm onAdd={onAdd} fixedStaff={staffName} openTabs={openTabs} onUpdateTabs={onUpdateTabs} menu={menu} />}
       {tab === "list" && <ReceiptTable entries={myEntries} />}
       {tab === "advance" && <AdvanceRequest staffName={staffName} advances={advances} onUpdateAdvances={onUpdateAdvances} entries={myEntries} selectedMonth={selectedMonth} />}
+      {tab === "shift" && <ShiftPanel staffName={staffName} shifts={shifts} onUpdateShifts={onUpdateShifts} staffList={staffList} userRole="staff" />}
       <PasswordChange staffName={staffName} staffList={staffList} onUpdateStaff={onUpdateStaff} />
     </div>
   );
 }
 
 // ─── Master View ───
-function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onDeleteEntry, advances, onUpdateAdvances, cashbox, onUpdateCashbox }) {
+function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onDeleteEntry, advances, onUpdateAdvances, cashbox, onUpdateCashbox, shifts, onUpdateShifts }) {
   const [tab, setTab] = useState("staff");
   const [newStaffName, setNewStaffName] = useState("");
   const [newStaffRole, setNewStaffRole] = useState("staff");
@@ -1742,7 +1895,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   };
   const removeStaff = (name) => onUpdateStaff(staffList.filter(s => s.name !== name));
   const changeRole = (name, newRole) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, role: newRole } : s));
-  const changePassword = (name, pw) => onUpdateStaff(staffList.map(s => s.name === name ? { ...s, password: pw } : s));
+  const changePassword = (name, pw) => { if (pw.length <= 4) onUpdateStaff(staffList.map(s => s.name === name ? { ...s, password: pw } : s)); };
 
   // Monthly entries
   const monthEntries = entries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
@@ -1770,9 +1923,9 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
   return (
     <div style={s.container}>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["staff", "menu", "receipts", "cashbox", "advances"].map(t => (
+        {["staff", "menu", "receipts", "cashbox", "advances", "shift"].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ ...s.btnOutline, ...(tab === t ? { background: palette.accentSoft, color: palette.accent, borderColor: palette.accent } : {}), position: "relative" }}>
-            {{ staff: "スタッフ管理", menu: "メニュー管理", receipts: "伝票一覧", cashbox: "金庫管理", advances: "前借り履歴" }[t]}
+            {{ staff: "スタッフ管理", menu: "メニュー管理", receipts: "伝票一覧", cashbox: "金庫管理", advances: "前借り履歴", shift: "出勤管理" }[t]}
             {t === "advances" && advances.filter(a => a.status !== "received").length > 0 && (
               <span style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: 99, background: palette.orange, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{advances.filter(a => a.status !== "received").length}</span>
             )}
@@ -1795,7 +1948,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 12, color: palette.textDim, whiteSpace: "nowrap" }}>PW：</span>
-              <input style={{ ...s.input }} type="text" placeholder="パスワード" value={newStaffPassword} onChange={e => setNewStaffPassword(e.target.value)} />
+              <input style={{ ...s.input }} type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} placeholder="4桁" value={newStaffPassword} onChange={e => { if (e.target.value.length <= 4) setNewStaffPassword(e.target.value); }} />
             </div>
           </div>
 
@@ -1813,7 +1966,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                       <span style={s.tag("rgba(249,115,22,0.15)", palette.orange)}>オーナー</span>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
+                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
                       <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="owner" onChange={e => changeRole(st.name, e.target.value)}>
                         <option value="owner">オーナー</option>
                         <option value="manager">管理者</option>
@@ -1839,7 +1992,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                       <span style={s.tag(palette.accentSoft, palette.accent)}>管理者</span>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
+                      <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
                       <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="manager" onChange={e => changeRole(st.name, e.target.value)}>
                         <option value="owner">オーナー</option>
                         <option value="manager">管理者</option>
@@ -1869,7 +2022,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
                           <span style={s.tag(palette.greenSoft, palette.green)}>スタッフ</span>
                         </div>
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="text" value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
+                          <input style={{ ...s.input, width: 70, padding: "3px 6px", fontSize: 11 }} type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} value={st.password || "0000"} onChange={e => changePassword(st.name, e.target.value)} />
                           <select style={{ ...s.select, width: 90, padding: "3px 6px", fontSize: 11 }} value="staff" onChange={e => changeRole(st.name, e.target.value)}>
                             <option value="owner">オーナー</option>
                             <option value="manager">管理者</option>
@@ -2022,6 +2175,10 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
       {tab === "advances" && (
         <AdvanceHistory advances={advances} onUpdateAdvances={onUpdateAdvances} />
       )}
+
+      {tab === "shift" && (
+        <ShiftPanel staffName="マスター" shifts={shifts} onUpdateShifts={onUpdateShifts} staffList={staffList} userRole="master" />
+      )}
     </div>
   );
 }
@@ -2034,6 +2191,7 @@ const STAFF_STORAGE_KEY = "sales-manager-staff";
 const MENU_STORAGE_KEY = "sales-manager-menu";
 const ADVANCE_STORAGE_KEY = "sales-manager-advances";
 const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
+const SHIFT_STORAGE_KEY = "sales-manager-shifts";
 
 async function saveData(key, data) {
   const json = JSON.stringify(data);
@@ -2141,6 +2299,7 @@ function App() {
   const [menu, setMenu] = useState(DEFAULT_MENU);
   const [advances, setAdvances] = useState([]);
   const [cashbox, setCashbox] = useState([]);
+  const [shifts, setShifts] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
 
@@ -2152,13 +2311,15 @@ function App() {
       loadData(MENU_STORAGE_KEY),
       loadData(ADVANCE_STORAGE_KEY),
       loadData(CASHBOX_STORAGE_KEY),
-    ]).then(([e, t, st, m, adv, cb]) => {
+      loadData(SHIFT_STORAGE_KEY),
+    ]).then(([e, t, st, m, adv, cb, sh]) => {
       if (e) setEntries(e);
       if (t) setOpenTabs(t);
       if (st) setStaffList(st);
       if (m) setMenu(m);
       if (adv) setAdvances(adv);
       if (cb) setCashbox(cb);
+      if (sh) setShifts(sh);
       setLoaded(true);
     });
   }, []);
@@ -2204,6 +2365,11 @@ function App() {
     await saveData(CASHBOX_STORAGE_KEY, list);
     showSaved();
   };
+  const updateShifts = async (list) => {
+    setShifts(list);
+    await saveData(SHIFT_STORAGE_KEY, list);
+    showSaved();
+  };
 
   if (!loaded) return (
     <div style={{ ...s.loginWrap }}>
@@ -2229,12 +2395,12 @@ function App() {
         </div>
       </div>
       {user.role === "master"
-        ? <MasterView staffList={staffList} onUpdateStaff={updateStaff} menu={menu} onUpdateMenu={updateMenu} entries={entries} onDeleteEntry={deleteEntry} advances={advances} onUpdateAdvances={updateAdvances} cashbox={cashbox} onUpdateCashbox={updateCashbox} />
+        ? <MasterView staffList={staffList} onUpdateStaff={updateStaff} menu={menu} onUpdateMenu={updateMenu} entries={entries} onDeleteEntry={deleteEntry} advances={advances} onUpdateAdvances={updateAdvances} cashbox={cashbox} onUpdateCashbox={updateCashbox} shifts={shifts} onUpdateShifts={updateShifts} />
         : user.role === "owner"
-          ? <OwnerView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} />
+          ? <OwnerView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} shifts={shifts} onUpdateShifts={updateShifts} />
           : user.role === "manager"
-            ? <ManagerView entries={entries} onAdd={addEntry} onDelete={deleteEntry} staffName={user.name} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} />
-            : <StaffView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} />
+            ? <ManagerView entries={entries} onAdd={addEntry} onDelete={deleteEntry} staffName={user.name} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} shifts={shifts} onUpdateShifts={updateShifts} />
+            : <StaffView entries={entries} staffName={user.name} onAdd={addEntry} openTabs={openTabs} onUpdateTabs={updateTabs} menu={menu} staffList={staffList} onUpdateStaff={updateStaff} advances={advances} onUpdateAdvances={updateAdvances} shifts={shifts} onUpdateShifts={updateShifts} />
       }
     </div>
   );
