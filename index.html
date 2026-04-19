@@ -153,7 +153,9 @@ function Login({ onLogin, staffList }) {
     if (a.role !== b.role) return (roleOrder[a.role] ?? 9) - (roleOrder[b.role] ?? 9);
     return a.name.localeCompare(b.name, "ja");
   });
-  const [name, setName] = useState(sorted.length > 0 ? sorted[0].name : "");
+  const lastUser = typeof localStorage !== "undefined" ? localStorage.getItem("sales-manager-last-user") : null;
+  const defaultName = (lastUser && sorted.some(st => st.name === lastUser)) ? lastUser : (sorted.length > 0 ? sorted[0].name : "");
+  const [name, setName] = useState(defaultName);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [masterMode, setMasterMode] = useState(false);
@@ -165,11 +167,15 @@ function Login({ onLogin, staffList }) {
     const found = staffList.find(s => s.name === name);
     if (!found) { setError("登録されていない名前です"); return; }
     if ((found.password || "0000") !== password) { setError("パスワードが違います"); return; }
+    localStorage.setItem("sales-manager-last-user", found.name);
     onLogin(found.role, found.name);
   };
 
   const handleMaster = () => {
-    if (masterPw === "0210") {
+    const owner = staffList.find(st => st.role === "owner");
+    const masterPassword = owner ? (owner.password || "0000") : "0210";
+    if (masterPw === masterPassword) {
+      localStorage.setItem("sales-manager-last-user", "マスター");
       onLogin("master", "マスター");
     } else {
       setMasterError("パスワードが違います");
@@ -1323,9 +1329,13 @@ function AdvanceNotifications({ advances, onUpdateAdvances, managerName }) {
 }
 
 // ─── Advance History (Master) ───
-function AdvanceHistory({ advances }) {
+function AdvanceHistory({ advances, onUpdateAdvances }) {
   const statusLabel = { pending: "承認待ち", processed: "処理済み", received: "受取済み" };
   const statusColor = { pending: palette.orange, processed: palette.accent, received: palette.green };
+
+  const deleteAdvance = (id) => {
+    onUpdateAdvances(advances.filter(a => a.id !== id));
+  };
 
   return (
     <div>
@@ -1343,6 +1353,7 @@ function AdvanceHistory({ advances }) {
                   <th style={s.th}>状態</th>
                   <th style={s.th}>処理者</th>
                   <th style={s.th}>受取日</th>
+                  <th style={s.th}></th>
                 </tr>
               </thead>
               <tbody>
@@ -1354,6 +1365,9 @@ function AdvanceHistory({ advances }) {
                     <td style={s.td}><span style={s.tag(statusColor[a.status] + "22", statusColor[a.status])}>{statusLabel[a.status]}</span></td>
                     <td style={s.td}>{a.processedBy || "-"}</td>
                     <td style={s.td}>{a.receivedDate || "-"}</td>
+                    <td style={s.td}>
+                      <button onClick={() => deleteAdvance(a.id)} style={{ background: "none", border: "none", color: palette.red, cursor: "pointer", fontSize: 12 }}>削除</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -2006,7 +2020,7 @@ function MasterView({ staffList, onUpdateStaff, menu, onUpdateMenu, entries, onD
       )}
 
       {tab === "advances" && (
-        <AdvanceHistory advances={advances} />
+        <AdvanceHistory advances={advances} onUpdateAdvances={onUpdateAdvances} />
       )}
     </div>
   );
