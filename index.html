@@ -14,6 +14,7 @@
   input, select, textarea { font-size: 16px !important; }
   body { background: #0f1117; }
   #root { min-height: 100vh; }
+  button { -webkit-appearance: none; appearance: none; touch-action: manipulation; }
 </style>
 <script>
 /**
@@ -348,6 +349,8 @@ const ROLES = {
   ヘルプ: 0.4,
   サクラ: 0.3
 };
+const CATCH_MARGIN = 2000; // キャッチ1案件あたりのマージン額
+const PLAN_NAMES = ["飲み飲ませ（無制限）", "セット制"];
 const COMPANY_RATES = {
   従業員: 0.3,
   メイン: 0.4,
@@ -410,6 +413,19 @@ function getTax(e) {
   if (e.tax != null) return e.tax;
   const cardFee = e.cardFee || 0;
   return e.amount - cardFee - Math.floor((e.amount - cardFee) / 1.1);
+}
+
+// 伝票の来店人数を取得（プラン項目の qty 合計）
+function getPersonCount(entry) {
+  if (!entry || !entry.items) return 0;
+  return entry.items.filter(c => PLAN_NAMES.includes(c.name)).reduce((s, c) => s + (c.qty || 0), 0);
+}
+// 伝票のキャッチマージン額（人数 × CATCH_MARGIN）。catchName が無ければ 0
+function getCatchMargin(entry) {
+  if (!entry || !entry.catchName) return 0;
+  const persons = getPersonCount(entry);
+  // 人数が取得できない（古い伝票など）場合は 1人分とみなす
+  return Math.max(persons, 1) * CATCH_MARGIN;
 }
 
 // 営業日を取得（当日20:00〜翌日19:59 を1営業日とする / JST基準）
@@ -533,8 +549,8 @@ const s = {
     fontWeight: 600,
     padding: "3px 10px",
     borderRadius: 99,
-    background: color === "blue" ? palette.accentSoft : color === "orange" ? palette.orangeSoft : palette.greenSoft,
-    color: color === "blue" ? palette.accent : color === "orange" ? palette.orange : palette.green
+    background: color === "blue" ? palette.accentSoft : color === "orange" ? palette.orangeSoft : color === "purple" ? "rgba(168,85,247,0.15)" : palette.greenSoft,
+    color: color === "blue" ? palette.accent : color === "orange" ? palette.orange : color === "purple" ? "#c084fc" : palette.green
   }),
   container: {
     maxWidth: 960,
@@ -876,14 +892,15 @@ function Login({
     const ro = {
       owner: 0,
       manager: 1,
-      staff: 2
+      staff: 2,
+      catch: 3
     };
     if (a.role !== b.role) return (ro[a.role] ?? 9) - (ro[b.role] ?? 9);
     return a.name.localeCompare(b.name, "ja");
   }).map(st => /*#__PURE__*/React.createElement("option", {
     key: st.name,
     value: st.name
-  }, st.name, "\uFF08", st.role === "owner" ? "オーナー" : st.role === "manager" ? "管理者" : "スタッフ", "\uFF09"))), /*#__PURE__*/React.createElement(NumPad, {
+  }, st.name, "\uFF08", st.role === "owner" ? "オーナー" : st.role === "manager" ? "管理者" : st.role === "catch" ? "キャッチ" : "スタッフ", "\uFF09"))), /*#__PURE__*/React.createElement(NumPad, {
     value: password,
     onChange: v => {
       setPassword(v);
@@ -993,7 +1010,6 @@ function elapsedHours(ts) {
   const h = (Date.now() - ts) / 3600000;
   return Math.max(1, Math.ceil(h));
 }
-const PLAN_NAMES = ["飲み飲ませ（無制限）", "セット制"];
 
 // ─── Order Panel (per customer) ───
 function OrderPanel({
@@ -1003,7 +1019,8 @@ function OrderPanel({
   onCheckout,
   onBack,
   isManager,
-  menu
+  menu,
+  catchList = []
 }) {
   const [cart, setCart] = useState(customer.items || []);
   const [activeCat, setActiveCat] = useState(menu[0].cat);
@@ -1012,6 +1029,7 @@ function OrderPanel({
   const [received, setReceived] = useState("");
   const [role, setRole] = useState("従業員");
   const [datetime, setDatetime] = useState(customer.datetime || nowLocal());
+  const [catchName, setCatchName] = useState(customer.catchName || "");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30000);
@@ -1116,7 +1134,7 @@ function OrderPanel({
     }
   }, "\u958B\u59CB ", formatTime(customer.startTime), "\u3000\uFF08", elapsedStr(customer.startTime), " \u7D4C\u904E\uFF09")), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      onSave(cart, role, datetime);
+      onSave(cart, role, datetime, catchName);
       onBack();
     },
     style: {
@@ -1192,7 +1210,32 @@ function OrderPanel({
       key: dd,
       value: dd
     }, dd, "\u65E5"))));
-  })()), !hasPlan ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  })()), catchList.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: palette.textDim,
+      marginBottom: 6
+    }
+  }, "\u30AD\u30E3\u30C3\u30C1\uFF08\u7D39\u4ECB\u8005\uFF09"), /*#__PURE__*/React.createElement("select", {
+    style: s.select,
+    value: catchName,
+    onChange: e => setCatchName(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 \u306A\u3057 \u2014"), catchList.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c,
+    value: c
+  }, c))), catchName && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.green,
+      marginTop: 4
+    }
+  }, "\u2713 ", catchName, " \u3055\u3093\u304B\u3089\u306E\u7D39\u4ECB\uFF081\u4EBA\u3042\u305F\u308A ", formatYen(CATCH_MARGIN), "\uFF09")), !hasPlan ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       color: palette.orange,
@@ -1455,7 +1498,7 @@ function OrderPanel({
     },
     onClick: () => {
       if (customer.unpaid) return;
-      onSave(cart, role, datetime);
+      onSave(cart, role, datetime, catchName);
       onBack();
     }
   }, "\u4E00\u6642\u4FDD\u5B58"), /*#__PURE__*/React.createElement("button", {
@@ -1471,7 +1514,7 @@ function OrderPanel({
     },
     onClick: () => {
       if (total > 0) {
-        onSaveUnpaid(cart, role, datetime);
+        onSaveUnpaid(cart, role, datetime, catchName);
         onBack();
       }
     }
@@ -1673,7 +1716,7 @@ function OrderPanel({
       },
       onClick: () => {
         if (payMethod === "card" || change >= 0) {
-          onCheckout(cart, role, datetime, payMethod);
+          onCheckout(cart, role, datetime, payMethod, catchName);
           setReceived("");
         }
       }
@@ -1688,7 +1731,8 @@ function EntryForm({
   isManager,
   openTabs,
   onUpdateTabs,
-  menu
+  menu,
+  catchList = []
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [newName, setNewName] = useState("");
@@ -1740,7 +1784,7 @@ function EntryForm({
       unpaidAt: t.unpaidAt || new Date().toISOString()
     } : t));
   };
-  const checkout = (id, items, role, datetime, payMethod) => {
+  const checkout = (id, items, role, datetime, payMethod, catchName) => {
     const tab = openTabs.find(t => t.id === id);
     const total = items.reduce((s, c) => s + calcItemTotal(c), 0);
     const tax = Math.floor(total * 0.1);
@@ -1757,7 +1801,12 @@ function EntryForm({
       payMethod: payMethod || "cash",
       role: isManager ? "-" : role,
       datetime: datetime || nowLocal(),
-      items
+      items,
+      // 元が未収だった場合フラグを残す
+      wasUnpaid: !!tab.unpaid,
+      unpaidAt: tab.unpaidAt || null,
+      // キャッチ（紹介者）情報
+      catchName: catchName || tab.catchName || ""
     });
     setOpenTabs(openTabs.filter(t => t.id !== id));
     setSelectedId(null);
@@ -1768,9 +1817,10 @@ function EntryForm({
       customer: selected,
       isManager: isManager,
       menu: menu,
-      onSave: (items, role, datetime) => saveItems(selected.id, items, role, datetime),
-      onSaveUnpaid: (items, role, datetime) => saveAsUnpaid(selected.id, items, role, datetime),
-      onCheckout: (items, role, datetime, payMethod) => checkout(selected.id, items, role, datetime, payMethod),
+      catchList: catchList,
+      onSave: (items, role, datetime, catchName) => saveItems(selected.id, items, role, datetime, catchName),
+      onSaveUnpaid: (items, role, datetime, catchName) => saveAsUnpaid(selected.id, items, role, datetime, catchName),
+      onCheckout: (items, role, datetime, payMethod, catchName) => checkout(selected.id, items, role, datetime, payMethod, catchName),
       onBack: () => setSelectedId(null)
     });
   }
@@ -1892,7 +1942,16 @@ function EntryForm({
         borderRadius: 4,
         letterSpacing: 1
       }
-    }, "\u672A\u53CE"), (() => {
+    }, "\u672A\u53CE"), tab.catchName && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 600,
+        color: "#c084fc",
+        border: "1px solid #c084fc",
+        padding: "1px 6px",
+        borderRadius: 3
+      }
+    }, "\u30AD\u30E3\u30C3\u30C1: ", tab.catchName), (() => {
       const plan = tab.items.find(c => PLAN_NAMES.includes(c.name));
       return plan ? /*#__PURE__*/React.createElement("span", {
         style: s.tag(palette.greenSoft, palette.green)
@@ -2590,7 +2649,9 @@ function ReceiptTable({
 function SalarySummary({
   entries,
   staffName,
-  managerName
+  managerName,
+  expenses = [],
+  selectedMonth
 }) {
   const filtered = staffName ? entries.filter(e => e.staff === staffName) : entries;
   const byStaff = {};
@@ -2601,13 +2662,44 @@ function SalarySummary({
       taxExcluded: 0,
       pay: 0,
       mgrShare: 0,
-      companyShare: 0
+      companyShare: 0,
+      catchCount: 0,
+      catchMargin: 0
     };
     byStaff[e.staff].total += e.amount;
     byStaff[e.staff].taxExcluded += taxEx;
     byStaff[e.staff].pay += Math.floor(taxEx * (ROLES[e.role] || 0));
     byStaff[e.staff].mgrShare += Math.floor(taxEx * (MGR_RATES[e.role] || 0));
     byStaff[e.staff].companyShare += Math.floor(taxEx * (COMPANY_RATES[e.role] || 0));
+    // キャッチ経由の伝票を担当した場合、担当者から「人数 × CATCH_MARGIN」を直接控除
+    if (e.catchName) {
+      byStaff[e.staff].catchCount += 1;
+      byStaff[e.staff].catchMargin += getCatchMargin(e);
+    }
+  }
+  // 各担当者の経費精算（承認済の経費を集計）
+  // selectedMonth が指定されていれば その月の承認済経費、なければ全期間
+  const approvedExpenses = expenses.filter(ex => {
+    if (ex.status !== "approved") return false;
+    if (selectedMonth) return (ex.date || "").startsWith(selectedMonth);
+    return true;
+  });
+  for (const ex of approvedExpenses) {
+    if (!byStaff[ex.staff]) byStaff[ex.staff] = {
+      total: 0,
+      taxExcluded: 0,
+      pay: 0,
+      mgrShare: 0,
+      companyShare: 0,
+      catchCount: 0,
+      catchMargin: 0
+    };
+    byStaff[ex.staff].expenseReimburse = (byStaff[ex.staff].expenseReimburse || 0) + ex.amount;
+  }
+  // 各担当者の実質支給額（報酬 - キャッチマージン控除 + 経費精算）
+  for (const name in byStaff) {
+    byStaff[name].expenseReimburse = byStaff[name].expenseReimburse || 0;
+    byStaff[name].netPay = byStaff[name].pay - byStaff[name].catchMargin + byStaff[name].expenseReimburse;
   }
   const totalAllSales = filtered.reduce((s, e) => s + e.amount, 0);
   const totalTaxExcluded = Object.values(byStaff).reduce((s, v) => s + v.taxExcluded, 0);
@@ -2617,6 +2709,10 @@ function SalarySummary({
   // Manager's own sales
   const mgrOwnEntries = managerName ? filtered.filter(e => e.staff === managerName) : [];
   const mgrOwnTaxExcluded = mgrOwnEntries.reduce((s, e) => s + getTaxExcluded(e), 0);
+
+  // 管理者本人がキャッチ経由を担当した場合の控除額（自分の売上から直接引く）
+  const mgrOwnCatchCount = managerName ? mgrOwnEntries.filter(e => e.catchName).length : 0;
+  const mgrOwnCatchMargin = managerName ? mgrOwnEntries.reduce((s, e) => s + getCatchMargin(e), 0) : 0;
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: s.card
   }, /*#__PURE__*/React.createElement("div", {
@@ -2633,9 +2729,13 @@ function SalarySummary({
     style: s.th
   }, "\u58F2\u4E0A\u5408\u8A08"), /*#__PURE__*/React.createElement("th", {
     style: s.th
-  }, "\u7A0E\u629C\u5408\u8A08"), /*#__PURE__*/React.createElement("th", {
+  }, "\u5831\u916C"), /*#__PURE__*/React.createElement("th", {
     style: s.th
-  }, "\u5831\u916C50%"), /*#__PURE__*/React.createElement("th", {
+  }, "\u30AD\u30E3\u30C3\u30C1\u63A7\u9664"), /*#__PURE__*/React.createElement("th", {
+    style: s.th
+  }, "\u7D4C\u8CBB\u7CBE\u7B97"), /*#__PURE__*/React.createElement("th", {
+    style: s.th
+  }, "\u5B9F\u652F\u7D66"), /*#__PURE__*/React.createElement("th", {
     style: s.th
   }, "\u7BA1\u7406\u800520%"))), /*#__PURE__*/React.createElement("tbody", null, Object.entries(byStaff).map(([name, d]) => /*#__PURE__*/React.createElement("tr", {
     key: name
@@ -2655,14 +2755,26 @@ function SalarySummary({
       fontVariantNumeric: "tabular-nums",
       color: palette.textDim
     }
-  }, formatYen(d.taxExcluded)), /*#__PURE__*/React.createElement("td", {
+  }, formatYen(d.pay)), /*#__PURE__*/React.createElement("td", {
+    style: {
+      ...s.td,
+      fontVariantNumeric: "tabular-nums",
+      color: d.catchMargin > 0 ? "#c084fc" : palette.textDim
+    }
+  }, d.catchMargin > 0 ? `−${formatYen(d.catchMargin)}` : "−"), /*#__PURE__*/React.createElement("td", {
+    style: {
+      ...s.td,
+      fontVariantNumeric: "tabular-nums",
+      color: d.expenseReimburse > 0 ? palette.green : palette.textDim
+    }
+  }, d.expenseReimburse > 0 ? `+${formatYen(d.expenseReimburse)}` : "−"), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
       color: palette.green,
-      fontWeight: 600,
+      fontWeight: 700,
       fontVariantNumeric: "tabular-nums"
     }
-  }, formatYen(d.pay)), /*#__PURE__*/React.createElement("td", {
+  }, formatYen(d.netPay)), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
       fontVariantNumeric: "tabular-nums"
@@ -2689,21 +2801,36 @@ function SalarySummary({
       fontVariantNumeric: "tabular-nums",
       color: palette.textDim
     }
-  }, formatYen(totalTaxExcluded)), /*#__PURE__*/React.createElement("td", {
+  }, formatYen(Object.values(byStaff).reduce((s, v) => s + v.pay, 0))), /*#__PURE__*/React.createElement("td", {
+    style: {
+      ...s.td,
+      fontWeight: 700,
+      fontVariantNumeric: "tabular-nums",
+      color: "#c084fc"
+    }
+  }, "\u2212", formatYen(Object.values(byStaff).reduce((s, v) => s + v.catchMargin, 0))), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
       fontWeight: 700,
       fontVariantNumeric: "tabular-nums",
       color: palette.green
     }
-  }, formatYen(Object.values(byStaff).reduce((s, v) => s + v.pay, 0))), /*#__PURE__*/React.createElement("td", {
+  }, "+", formatYen(Object.values(byStaff).reduce((s, v) => s + (v.expenseReimburse || 0), 0))), /*#__PURE__*/React.createElement("td", {
+    style: {
+      ...s.td,
+      fontWeight: 700,
+      fontVariantNumeric: "tabular-nums",
+      color: palette.green
+    }
+  }, formatYen(Object.values(byStaff).reduce((s, v) => s + v.netPay, 0))), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
       fontWeight: 700,
       fontVariantNumeric: "tabular-nums"
     }
   }, formatYen(totalMgrShare)))))), managerName && (() => {
-    const mgrTotal = mgrOwnTaxExcluded + perMgrShare;
+    // 管理者本人がキャッチ経由を担当した分のみ控除
+    const mgrTotal = mgrOwnTaxExcluded + perMgrShare - mgrOwnCatchMargin;
     const bonus = calcManagerBonus(mgrTotal);
     const finalSalary = MANAGER_BASE + bonus;
     return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
@@ -2726,13 +2853,52 @@ function SalarySummary({
         ...s.statNum,
         fontSize: 22
       }
-    }, formatYen(perMgrShare))), /*#__PURE__*/React.createElement("div", {
+    }, formatYen(perMgrShare))), mgrOwnCatchCount > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        gridColumn: "1 / -1",
+        padding: 12,
+        background: "rgba(168,85,247,0.08)",
+        border: "1px solid rgba(168,85,247,0.3)",
+        borderRadius: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "baseline",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: "#c084fc",
+        fontWeight: 600
+      }
+    }, "\u3042\u306A\u305F\u304C\u62C5\u5F53\u3057\u305F\u30AD\u30E3\u30C3\u30C1\u7D4C\u7531\u306E\u63A7\u9664"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim
+      }
+    }, mgrOwnEntries.filter(e => e.catchName).reduce((s, e) => s + Math.max(getPersonCount(e), 1), 0), "\u4EBA\u5206 \xD7 ", formatYen(CATCH_MARGIN))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "flex-end",
+        alignItems: "baseline"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 18,
+        fontWeight: 700,
+        color: palette.red,
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, "\u2212 ", formatYen(mgrOwnCatchMargin)))), /*#__PURE__*/React.createElement("div", {
       style: {
         gridColumn: "1 / -1"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: s.statLabel
-    }, "\u7BA1\u7406\u8005 \u5408\u8A08\uFF08\u7A0E\u629C\uFF09"), /*#__PURE__*/React.createElement("div", {
+    }, "\u7BA1\u7406\u8005 \u5408\u8A08\uFF08\u7A0E\u629C", mgrOwnCatchCount > 0 ? "・キャッチマージン控除後" : "", "\uFF09"), /*#__PURE__*/React.createElement("div", {
       style: {
         ...s.statNum,
         fontSize: 24,
@@ -2744,7 +2910,7 @@ function SalarySummary({
         color: palette.textDim,
         marginTop: 4
       }
-    }, "\u203B\u7BA1\u7406\u8005\u5831\u916C20%\u306E\u3046\u3061\u5404\u7BA1\u7406\u800510%\u914D\u5206")))), /*#__PURE__*/React.createElement("div", {
+    }, "\u203B\u7BA1\u7406\u8005\u5831\u916C20%\u306E\u3046\u3061\u5404\u7BA1\u7406\u800510%\u914D\u5206", mgrOwnCatchCount > 0 ? "／自分が担当したキャッチマージンは控除済" : "")))), /*#__PURE__*/React.createElement("div", {
       style: s.card
     }, /*#__PURE__*/React.createElement("div", {
       style: s.cardTitle
@@ -2926,6 +3092,1406 @@ function PasswordChange({
 }
 
 // ─── Advance Request (Staff) ───
+// ─── Expense Request (個人用 / 経費申請フォームと自分の履歴) ───
+function ExpenseRequest({
+  staffName,
+  expenses,
+  onUpdateExpenses
+}) {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [item, setItem] = useState("");
+  const [amount, setAmount] = useState("");
+  const [memo, setMemo] = useState("");
+  const [msg, setMsg] = useState({
+    text: "",
+    color: ""
+  });
+  const myExpenses = expenses.filter(e => e.staff === staffName).slice().sort((a, b) => (b.requestDate || "").localeCompare(a.requestDate || ""));
+  const submit = () => {
+    try {
+      if (!item || !item.trim()) {
+        setMsg({
+          text: "項目を入力してください",
+          color: palette.red
+        });
+        return;
+      }
+      const amt = parseInt(amount, 10);
+      if (!amt || amt <= 0) {
+        setMsg({
+          text: "有効な金額を入力してください",
+          color: palette.red
+        });
+        return;
+      }
+      if (!date) {
+        setMsg({
+          text: "購入日を入力してください",
+          color: palette.red
+        });
+        return;
+      }
+      const newExp = {
+        id: crypto && crypto.randomUUID ? crypto.randomUUID() : `exp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        staff: staffName,
+        date,
+        item: item.trim(),
+        amount: amt,
+        memo: (memo || "").trim(),
+        status: "pending",
+        requestDate: new Date().toISOString().slice(0, 19).replace("T", " ")
+      };
+      onUpdateExpenses([...(expenses || []), newExp]);
+      setItem("");
+      setAmount("");
+      setMemo("");
+      setDate(new Date().toISOString().slice(0, 10));
+      setMsg({
+        text: "申請しました",
+        color: palette.green
+      });
+      setTimeout(() => setMsg({
+        text: "",
+        color: ""
+      }), 1500);
+    } catch (err) {
+      console.error("経費申請エラー:", err);
+      setMsg({
+        text: "申請に失敗しました: " + (err.message || ""),
+        color: palette.red
+      });
+    }
+  };
+  const cancel = id => {
+    if (!confirm("この経費申請を取り消しますか？")) return;
+    onUpdateExpenses(expenses.filter(e => e.id !== id));
+  };
+
+  // ステータスごとの集計
+  const pendingTotal = myExpenses.filter(e => e.status === "pending").reduce((s, e) => s + e.amount, 0);
+  const approvedTotal = myExpenses.filter(e => e.status === "approved").reduce((s, e) => s + e.amount, 0);
+  const rejectedCount = myExpenses.filter(e => e.status === "rejected").length;
+  const statusBadge = status => {
+    if (status === "pending") return /*#__PURE__*/React.createElement("span", {
+      style: {
+        ...s.tag(palette.orangeSoft, palette.orange),
+        fontWeight: 700
+      }
+    }, "\u627F\u8A8D\u5F85\u3061");
+    if (status === "approved") return /*#__PURE__*/React.createElement("span", {
+      style: {
+        ...s.tag(palette.greenSoft, palette.green),
+        fontWeight: 700
+      }
+    }, "\u627F\u8A8D\u6E08");
+    if (status === "rejected") return /*#__PURE__*/React.createElement("span", {
+      style: {
+        ...s.tag("rgba(220,80,80,0.15)", palette.red),
+        fontWeight: 700
+      }
+    }, "\u5374\u4E0B");
+    return null;
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.cardTitle
+  }, "\u7D4C\u8CBB\u7533\u8ACB"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u8CFC\u5165\u65E5"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "date",
+    value: date,
+    onChange: e => setDate(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u8CFC\u5165\u3057\u305F\u3082\u306E\uFF08\u5FC5\u9808\uFF09"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "text",
+    placeholder: "\u4F8B: \u30B3\u30D4\u30FC\u7528\u7D19\u3001\u6D88\u8017\u54C1",
+    value: item,
+    onChange: e => setItem(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u91D1\u984D\uFF08\u5186\uFF09"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "text",
+    inputMode: "numeric",
+    placeholder: "\u4F8B: 1500",
+    value: amount,
+    onChange: e => setAmount(e.target.value.replace(/[^0-9]/g, ""))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u30E1\u30E2\uFF08\u4EFB\u610F\uFF09"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "text",
+    placeholder: "\u8CFC\u5165\u5E97\u8217\u30FB\u88DC\u8DB3\u306A\u3069",
+    value: memo,
+    onChange: e => setMemo(e.target.value)
+  })), msg.text && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: msg.color,
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, msg.text), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...s.btn,
+      padding: "14px",
+      fontSize: 15,
+      fontWeight: 700
+    },
+    onClick: submit
+  }, "\u7533\u8ACB\u3059\u308B"))), myExpenses.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u627F\u8A8D\u5F85\u3061"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: palette.orange,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(pendingTotal))), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u627F\u8A8D\u6E08\uFF08\u7D66\u4E0E\u306B\u53CD\u6620\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(approvedTotal)))), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.cardTitle
+  }, "\u7533\u8ACB\u5C65\u6B74"), myExpenses.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 16,
+      fontSize: 13
+    }
+  }, "\u7533\u8ACB\u5C65\u6B74\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, myExpenses.map(exp => /*#__PURE__*/React.createElement("div", {
+    key: exp.id,
+    style: {
+      padding: 10,
+      background: palette.cardAlt,
+      borderRadius: 8,
+      borderLeft: `3px solid ${exp.status === "approved" ? palette.green : exp.status === "rejected" ? palette.red : palette.orange}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 8,
+      marginBottom: 4,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      flexWrap: "wrap"
+    }
+  }, statusBadge(exp.status), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.white
+    }
+  }, exp.item)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: palette.white,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(exp.amount))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, "\u8CFC\u5165\u65E5: ", exp.date, exp.memo && `　メモ: ${exp.memo}`), exp.status === "rejected" && exp.rejectReason && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.red,
+      marginTop: 4
+    }
+  }, "\u5374\u4E0B\u7406\u7531: ", exp.rejectReason), exp.status === "approved" && exp.approvedBy && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.green,
+      marginTop: 4
+    }
+  }, exp.approvedBy, " \u3055\u3093\u304C\u627F\u8A8D (", (exp.approvedDate || "").slice(0, 10), ")"), exp.status === "pending" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => cancel(exp.id),
+    style: {
+      ...s.btnOutline,
+      padding: "3px 10px",
+      fontSize: 11,
+      color: palette.red,
+      borderColor: palette.red
+    }
+  }, "\u7533\u8ACB\u53D6\u6D88")))))));
+}
+
+// ─── Expense Approval (オーナー用 / 全員の経費申請を確認・承認/却下) ───
+function ExpenseApproval({
+  expenses,
+  onUpdateExpenses,
+  ownerName
+}) {
+  const [filter, setFilter] = useState("pending"); // pending / approved / rejected / all
+  const [rejectingId, setRejectingId] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const visible = expenses.filter(e => filter === "all" ? true : e.status === filter).slice().sort((a, b) => (b.requestDate || "").localeCompare(a.requestDate || ""));
+  const pendingCount = expenses.filter(e => e.status === "pending").length;
+  const pendingTotal = expenses.filter(e => e.status === "pending").reduce((s, e) => s + e.amount, 0);
+  const approvedTotal = expenses.filter(e => e.status === "approved").reduce((s, e) => s + e.amount, 0);
+  const approve = id => {
+    onUpdateExpenses(expenses.map(e => e.id === id ? {
+      ...e,
+      status: "approved",
+      approvedDate: new Date().toISOString().slice(0, 19).replace("T", " "),
+      approvedBy: ownerName || "オーナー"
+    } : e));
+  };
+  const startReject = id => {
+    setRejectingId(id);
+    setRejectReason("");
+  };
+  const confirmReject = () => {
+    if (!rejectReason.trim()) {
+      alert("却下理由を入力してください");
+      return;
+    }
+    onUpdateExpenses(expenses.map(e => e.id === rejectingId ? {
+      ...e,
+      status: "rejected",
+      rejectReason: rejectReason.trim(),
+      approvedDate: new Date().toISOString().slice(0, 19).replace("T", " "),
+      approvedBy: ownerName || "オーナー"
+    } : e));
+    setRejectingId(null);
+    setRejectReason("");
+  };
+  const reapprove = id => {
+    if (!confirm("承認/却下を取り消して「承認待ち」に戻しますか？")) return;
+    onUpdateExpenses(expenses.map(e => e.id === id ? {
+      ...e,
+      status: "pending",
+      rejectReason: "",
+      approvedDate: "",
+      approvedBy: ""
+    } : e));
+  };
+  const fmtDt = s => s ? s.replace("T", " ").slice(0, 16) : "";
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: s.grid2
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, "\u627F\u8A8D\u5F85\u3061"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.statNum,
+      color: pendingCount > 0 ? palette.orange : palette.textDim
+    }
+  }, pendingCount, "\u4EF6 / ", formatYen(pendingTotal))), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, "\u627F\u8A8D\u6E08\uFF08\u7D2F\u8A08\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.statNum,
+      color: palette.green
+    }
+  }, formatYen(approvedTotal)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      display: "flex",
+      gap: 6,
+      padding: 8
+    }
+  }, [{
+    key: "pending",
+    label: "承認待ち",
+    color: palette.orange
+  }, {
+    key: "approved",
+    label: "承認済",
+    color: palette.green
+  }, {
+    key: "rejected",
+    label: "却下",
+    color: palette.red
+  }, {
+    key: "all",
+    label: "すべて",
+    color: palette.textDim
+  }].map(f => /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    key: f.key,
+    onClick: () => setFilter(f.key),
+    style: {
+      ...s.btnOutline,
+      flex: 1,
+      padding: "8px 4px",
+      fontSize: 11,
+      borderColor: filter === f.key ? f.color : palette.border,
+      background: filter === f.key ? "rgba(255,255,255,0.05)" : "transparent",
+      color: filter === f.key ? f.color : palette.textDim,
+      fontWeight: filter === f.key ? 700 : 400
+    }
+  }, f.label))), rejectingId && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      border: `2px solid ${palette.red}`,
+      background: "rgba(220,80,80,0.06)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.cardTitle,
+      color: palette.red
+    }
+  }, "\u5374\u4E0B\u7406\u7531\u3092\u5165\u529B"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "text",
+    placeholder: "\u4F8B: \u9818\u53CE\u66F8\u3092\u78BA\u8A8D\u3067\u304D\u306A\u3044\u305F\u3081",
+    value: rejectReason,
+    onChange: e => setRejectReason(e.target.value)
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...s.btnOutline,
+      padding: 10
+    },
+    onClick: () => {
+      setRejectingId(null);
+      setRejectReason("");
+    }
+  }, "\u30AD\u30E3\u30F3\u30BB\u30EB"), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btn,
+      padding: 10,
+      background: palette.red
+    },
+    onClick: confirmReject
+  }, "\u5374\u4E0B\u3059\u308B"))), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, visible.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 20,
+      fontSize: 13
+    }
+  }, "\u8A72\u5F53\u3059\u308B\u7533\u8ACB\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, visible.map(exp => /*#__PURE__*/React.createElement("div", {
+    key: exp.id,
+    style: {
+      padding: 12,
+      background: palette.cardAlt,
+      borderRadius: 8,
+      borderLeft: `3px solid ${exp.status === "approved" ? palette.green : exp.status === "rejected" ? palette.red : palette.orange}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 8,
+      marginBottom: 6,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      flexWrap: "wrap",
+      marginBottom: 2
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.white
+    }
+  }, exp.staff), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: palette.white
+    }
+  }, exp.item)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, "\u8CFC\u5165\u65E5: ", exp.date, "\u3000\u7533\u8ACB: ", fmtDt(exp.requestDate), exp.memo && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("br", null), "\u30E1\u30E2: ", exp.memo))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: palette.white,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(exp.amount))), exp.status === "pending" && rejectingId !== exp.id && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => startReject(exp.id),
+    style: {
+      ...s.btnOutline,
+      padding: 8,
+      fontSize: 12,
+      color: palette.red,
+      borderColor: palette.red
+    }
+  }, "\u5374\u4E0B"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => approve(exp.id),
+    style: {
+      ...s.btn,
+      padding: 8,
+      fontSize: 12,
+      background: palette.green
+    }
+  }, "\u627F\u8A8D")), exp.status === "approved" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.green
+    }
+  }, exp.approvedBy, "\u304C\u627F\u8A8D (", fmtDt(exp.approvedDate), ")"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => reapprove(exp.id),
+    style: {
+      ...s.btnOutline,
+      padding: "3px 8px",
+      fontSize: 10
+    }
+  }, "\u53D6\u6D88")), exp.status === "rejected" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.red,
+      marginBottom: 4
+    }
+  }, "\u5374\u4E0B\u7406\u7531: ", exp.rejectReason), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, exp.approvedBy, "\u304C\u5374\u4E0B (", fmtDt(exp.approvedDate), ")"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => reapprove(exp.id),
+    style: {
+      ...s.btnOutline,
+      padding: "3px 8px",
+      fontSize: 10
+    }
+  }, "\u53D6\u6D88"))))))));
+}
+
+// ─── Catch Management (管理者用 / キャッチごとの実績と支払い) ───
+function CatchManagement({
+  entries,
+  staffList,
+  cashbox,
+  onUpdateCashbox,
+  managerName
+}) {
+  const [payingFor, setPayingFor] = useState(null); // { catchName, defaultAmount }
+  const [payAmount, setPayAmount] = useState("");
+  const [payMemo, setPayMemo] = useState("");
+
+  // キャッチごとの集計（全期間）
+  const catchesList = staffList.filter(s => s.role === "catch");
+  const catchEntries = entries.filter(e => e.catchName);
+
+  // 既登録キャッチ + 削除済（伝票だけ残ってる）も拾う
+  const catchNames = new Set(catchesList.map(c => c.name));
+  const allCatchNames = new Set([...catchNames, ...catchEntries.map(e => e.catchName).filter(Boolean)]);
+
+  // 支払い記録を cashbox から取得（type === "catch"）
+  const catchPayments = cashbox.filter(c => c.type === "catch");
+
+  // 各キャッチの実績
+  const summary = [...allCatchNames].map(name => {
+    const myEntries = catchEntries.filter(e => e.catchName === name);
+    const myPayments = catchPayments.filter(c => c.catchName === name);
+    const totalEarned = myEntries.reduce((s, e) => s + getCatchMargin(e), 0);
+    const totalPaid = myPayments.reduce((s, p) => s + p.amount, 0);
+    const unpaid = totalEarned - totalPaid;
+    return {
+      name,
+      isDeleted: !catchNames.has(name),
+      count: myEntries.length,
+      totalEarned,
+      totalPaid,
+      unpaid,
+      entries: myEntries.slice().sort((a, b) => (b.datetime || "").localeCompare(a.datetime || "")),
+      payments: myPayments.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+    };
+  }).sort((a, b) => b.unpaid - a.unpaid);
+  const totalEarnedAll = summary.reduce((s, x) => s + x.totalEarned, 0);
+  const totalPaidAll = summary.reduce((s, x) => s + x.totalPaid, 0);
+  const totalUnpaidAll = summary.reduce((s, x) => s + x.unpaid, 0);
+  const startPayment = item => {
+    setPayingFor(item);
+    setPayAmount(String(item.unpaid));
+    setPayMemo("");
+  };
+  const cancelPayment = () => {
+    setPayingFor(null);
+    setPayAmount("");
+    setPayMemo("");
+  };
+  const confirmPayment = () => {
+    const amt = parseInt(payAmount, 10);
+    if (!amt || amt <= 0) {
+      alert("有効な金額を入力してください");
+      return;
+    }
+    const newRecord = {
+      id: crypto.randomUUID(),
+      type: "catch",
+      amount: amt,
+      catchName: payingFor.name,
+      memo: payMemo || `キャッチマージン支払い: ${payingFor.name}`,
+      paidBy: managerName || "-",
+      date: new Date().toISOString().slice(0, 19).replace("T", " ")
+    };
+    onUpdateCashbox([...cashbox, newRecord]);
+    cancelPayment();
+  };
+  const deletePayment = id => {
+    if (!confirm("この支払い記録を削除しますか？")) return;
+    onUpdateCashbox(cashbox.filter(c => c.id !== id));
+  };
+  const fmtDt = s => s ? s.replace("T", " ").slice(0, 16) : "";
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: s.grid2
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, "\u7D2F\u8A08\u30DE\u30FC\u30B8\u30F3\u7DCF\u984D\uFF08\u5168\u671F\u9593\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: s.statNum
+  }, formatYen(totalEarnedAll)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginTop: 4
+    }
+  }, "\u7D39\u4ECB\u4EF6\u6570 ", summary.reduce((s, x) => s + x.count, 0), " \u4EF6")), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, "\u672A\u6255\u3044\u6B8B\u9AD8\uFF08\u5168\u671F\u9593\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.statNum,
+      color: totalUnpaidAll > 0 ? palette.red : palette.green
+    }
+  }, formatYen(totalUnpaidAll)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginTop: 4
+    }
+  }, "\u652F\u6255\u6E08 ", formatYen(totalPaidAll)))), payingFor && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      border: `2px solid ${palette.accent}`,
+      background: palette.accentSoft
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.cardTitle,
+      color: palette.accent
+    }
+  }, payingFor.name, " \u3055\u3093\u3078\u652F\u6255\u3044"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: palette.textDim
+    }
+  }, "\u7D2F\u8A08\u30DE\u30FC\u30B8\u30F3: ", formatYen(payingFor.totalEarned), "\u3000\uFF0F\u3000\u652F\u6255\u6E08: ", formatYen(payingFor.totalPaid), "\u3000\uFF0F\u3000\u672A\u6255\u3044: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: palette.red,
+      fontWeight: 700
+    }
+  }, formatYen(payingFor.unpaid))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u652F\u6255\u3044\u91D1\u984D"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "tel",
+    inputMode: "numeric",
+    pattern: "[0-9]*",
+    value: payAmount,
+    onChange: e => setPayAmount(e.target.value.replace(/[^0-9]/g, ""))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u30E1\u30E2\uFF08\u4EFB\u610F\uFF09"), /*#__PURE__*/React.createElement("input", {
+    style: s.input,
+    type: "text",
+    placeholder: "\u4F8B: 4\u6708\u5206\u30DE\u30FC\u30B8\u30F3",
+    value: payMemo,
+    onChange: e => setPayMemo(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btnOutline,
+      padding: 12
+    },
+    onClick: cancelPayment
+  }, "\u30AD\u30E3\u30F3\u30BB\u30EB"), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btn,
+      padding: 12
+    },
+    onClick: confirmPayment
+  }, "\u652F\u6255\u3044\u78BA\u5B9A")))), summary.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 30
+    }
+  }, "\u30AD\u30E3\u30C3\u30C1\u7D4C\u7531\u306E\u4F1D\u7968\u306F\u307E\u3060\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 12
+    }
+  }, summary.map(item => /*#__PURE__*/React.createElement("div", {
+    key: item.name,
+    style: {
+      ...s.card,
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 12,
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 4,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: palette.white
+    }
+  }, item.name), /*#__PURE__*/React.createElement("span", {
+    style: s.tag("rgba(168,85,247,0.15)", "#c084fc")
+  }, "\u30AD\u30E3\u30C3\u30C1"), item.isDeleted && /*#__PURE__*/React.createElement("span", {
+    style: s.tag(palette.cardAlt, palette.textDim)
+  }, "\u524A\u9664\u6E08")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u7D39\u4ECB ", item.count, "\u4EF6")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u672A\u6255\u3044\u6B8B\u9AD8"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: item.unpaid > 0 ? palette.red : palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(item.unpaid)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 8,
+      marginBottom: 12,
+      padding: 8,
+      background: palette.cardAlt,
+      borderRadius: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, "\u7D2F\u8A08"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.white,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(item.totalEarned))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, "\u652F\u6255\u6E08"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(item.totalPaid))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, "\u672A\u6255\u3044"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: item.unpaid > 0 ? palette.red : palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(item.unpaid)))), item.unpaid > 0 && !payingFor && /*#__PURE__*/React.createElement("button", {
+    onClick: () => startPayment(item),
+    style: {
+      ...s.btn,
+      width: "100%",
+      padding: 10,
+      fontSize: 13,
+      marginBottom: 12
+    }
+  }, "\u652F\u6255\u3046\uFF08\u6700\u5927 ", formatYen(item.unpaid), "\uFF09"), item.payments.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: palette.textDim,
+      marginBottom: 4
+    }
+  }, "\u652F\u6255\u3044\u5C65\u6B74"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4
+    }
+  }, item.payments.map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.id,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "6px 8px",
+      background: palette.cardAlt,
+      borderRadius: 6,
+      fontSize: 11
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: palette.white,
+      fontWeight: 600
+    }
+  }, formatYen(p.amount)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: palette.textDim,
+      fontSize: 10
+    }
+  }, fmtDt(p.date), p.paidBy ? ` / 担当: ${p.paidBy}` : "", p.memo ? ` / ${p.memo}` : "")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => deletePayment(p.id),
+    style: {
+      ...s.btnOutline,
+      padding: "2px 8px",
+      fontSize: 10,
+      color: palette.red,
+      borderColor: palette.red
+    }
+  }, "\u524A\u9664"))))), /*#__PURE__*/React.createElement("details", null, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      cursor: "pointer",
+      padding: "4px 0"
+    }
+  }, "\u7D39\u4ECB\u4F1D\u7968 (", item.entries.length, "\u4EF6)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6,
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      maxHeight: 240,
+      overflowY: "auto"
+    }
+  }, item.entries.map(e => /*#__PURE__*/React.createElement("div", {
+    key: e.id,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      padding: "4px 8px",
+      fontSize: 11,
+      color: palette.textDim,
+      borderBottom: `1px solid ${palette.border}`
+    }
+  }, /*#__PURE__*/React.createElement("span", null, e.customerName || "-", " \u69D8\u3000", (e.datetime || "").slice(5, 16).replace("T", " ")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: palette.green
+    }
+  }, "+", formatYen(getCatchMargin(e)), " (", Math.max(getPersonCount(e), 1), "\u4EBA)")))))))));
+}
+
+// ─── Unpaid Tab (個人アカウント用 / 自分の未収伝票一覧 + 履歴) ───
+function UnpaidTab({
+  staffName,
+  openTabs,
+  entries
+}) {
+  const currentUnpaid = openTabs.filter(t => t.unpaid && t.staff === staffName);
+  const pastUnpaid = entries.filter(e => e.wasUnpaid && e.staff === staffName).slice().sort((a, b) => (b.datetime || "").localeCompare(a.datetime || ""));
+  const currentTotal = currentUnpaid.reduce((sum, t) => {
+    const sub = (t.items || []).reduce((s, c) => s + calcItemTotal(c), 0);
+    return sum + Math.floor(sub * 1.1);
+  }, 0);
+  const fmtUnpaidAt = iso => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    return `${jst.getUTCMonth() + 1}/${jst.getUTCDate()} ${String(jst.getUTCHours()).padStart(2, "0")}:${String(jst.getUTCMinutes()).padStart(2, "0")}`;
+  };
+  const fmtDt = s => s ? s.replace("T", " ") : "";
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u73FE\u5728\u306E\u672A\u53CE\u4EF6\u6570 / \u5408\u8A08"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: palette.red,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, currentUnpaid.length, "\u4EF6 / ", formatYen(currentTotal)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginTop: 4
+    }
+  }, "\u203B \u672A\u53CE\u4F1D\u7968\u306E\u51E6\u7406\uFF08\u652F\u6255\u53D7\u3051\u53D6\u308A\uFF09\u306F\u4F1D\u7968\u5165\u529B\u30BF\u30D6\u304B\u3089\u884C\u3063\u3066\u304F\u3060\u3055\u3044")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: palette.white,
+      marginBottom: 8,
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 4,
+      height: 14,
+      background: palette.red,
+      borderRadius: 2
+    }
+  }), "\u73FE\u5728\u306E\u672A\u53CE"), currentUnpaid.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 20
+    }
+  }, "\u73FE\u5728\u306E\u672A\u53CE\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, currentUnpaid.map(t => {
+    const sub = (t.items || []).reduce((s, c) => s + calcItemTotal(c), 0);
+    const total = Math.floor(sub * 1.1);
+    return /*#__PURE__*/React.createElement("div", {
+      key: t.id,
+      style: {
+        ...s.card,
+        border: `2px solid ${palette.red}`,
+        background: "rgba(220,80,80,0.06)",
+        padding: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 4,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: "#fff",
+        background: palette.red,
+        padding: "2px 8px",
+        borderRadius: 4
+      }
+    }, "\u672A\u53CE"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: palette.white
+      }
+    }, t.name, " \u69D8")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim
+      }
+    }, "\u672A\u53CE\u306B\u3057\u305F\u65E5\u6642: ", fmtUnpaidAt(t.unpaidAt)), t.items && t.items.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim,
+        marginTop: 4
+      }
+    }, t.items.map(it => `${it.name}×${it.qty}`).join("、"))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: "right"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: palette.red,
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, formatYen(total)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: palette.textDim
+      }
+    }, "\u7A0E\u8FBC"))));
+  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: palette.white,
+      marginBottom: 8,
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 4,
+      height: 14,
+      background: palette.green,
+      borderRadius: 2
+    }
+  }), "\u652F\u6255\u6E08\u306B\u306A\u3063\u305F\u672A\u53CE\uFF08\u5C65\u6B74\uFF09"), pastUnpaid.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 20
+    }
+  }, "\u5C65\u6B74\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 6
+    }
+  }, pastUnpaid.map(e => /*#__PURE__*/React.createElement("div", {
+    key: e.id,
+    style: {
+      ...s.card,
+      padding: 10,
+      borderLeft: `3px solid ${palette.green}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: 2,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: palette.green,
+      border: `1px solid ${palette.green}`,
+      padding: "1px 6px",
+      borderRadius: 3
+    }
+  }, "\u652F\u6255\u6E08"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.white
+    }
+  }, e.customerName || "-", " \u69D8"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, e.payMethod === "card" ? "カード" : "現金")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, e.unpaidAt && `未収: ${fmtUnpaidAt(e.unpaidAt)} → `, "\u652F\u6255: ", fmtDt(e.datetime))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(e.amount)))))))));
+}
+
+// ─── Catch View (キャッチ専用画面) ───
+function CatchView({
+  entries,
+  staffName,
+  staffList,
+  onUpdateStaff
+}) {
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const myCatchEntries = entries.filter(e => e.catchName === staffName);
+  const monthEntries = myCatchEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth)).slice().sort((a, b) => (b.datetime || "").localeCompare(a.datetime || ""));
+  const months = [...new Set(myCatchEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
+  const monthCount = monthEntries.length;
+  const monthPersonCount = monthEntries.reduce((s, e) => s + Math.max(getPersonCount(e), 1), 0);
+  const monthMargin = monthEntries.reduce((s, e) => s + getCatchMargin(e), 0);
+  const totalCount = myCatchEntries.length;
+  const totalPersonCount = myCatchEntries.reduce((s, e) => s + Math.max(getPersonCount(e), 1), 0);
+  const totalMargin = myCatchEntries.reduce((s, e) => s + getCatchMargin(e), 0);
+  const fmtDt = s => s ? s.replace("T", " ").slice(0, 16) : "";
+  return /*#__PURE__*/React.createElement("div", {
+    style: s.container
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btnOutline,
+      background: palette.accentSoft,
+      color: palette.accent,
+      borderColor: palette.accent
+    }
+  }, "\u30AD\u30E3\u30C3\u30C1\u5B9F\u7E3E")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "12px 20px"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: palette.textDim
+    }
+  }, "\u6708\uFF1A"), /*#__PURE__*/React.createElement("select", {
+    style: {
+      ...s.select,
+      width: 160
+    },
+    value: selectedMonth,
+    onChange: e => setSelectedMonth(e.target.value)
+  }, months.length === 0 ? /*#__PURE__*/React.createElement("option", {
+    value: selectedMonth
+  }, selectedMonth.replace("-", "年") + "月") : months.map(m => /*#__PURE__*/React.createElement("option", {
+    key: m,
+    value: m
+  }, m.replace("-", "年") + "月")))), /*#__PURE__*/React.createElement("div", {
+    style: s.grid2
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, selectedMonth.replace("-", "年") + "月", " \u306E\u7D39\u4ECB\u4EF6\u6570"), /*#__PURE__*/React.createElement("div", {
+    style: s.statNum
+  }, monthCount, " \u4EF6")), /*#__PURE__*/React.createElement("div", {
+    style: s.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.statLabel
+  }, selectedMonth.replace("-", "年") + "月", " \u306E\u30DE\u30FC\u30B8\u30F3"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.statNum,
+      color: palette.green
+    }
+  }, formatYen(monthMargin)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim,
+      marginTop: 4
+    }
+  }, "1\u4EBA\u3042\u305F\u308A ", formatYen(CATCH_MARGIN), " \xD7 ", monthPersonCount, "\u4EBA"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card,
+      padding: "12px 20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.textDim
+    }
+  }, "\u7D2F\u8A08\uFF08\u5168\u671F\u9593\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      alignItems: "baseline"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: palette.white,
+      fontWeight: 600
+    }
+  }, totalCount, " \u4EF6"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      color: palette.green,
+      fontWeight: 700,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, formatYen(totalMargin))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...s.card
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: s.cardTitle
+  }, "\u7D39\u4ECB\u4F1D\u7968\u4E00\u89A7\uFF08", selectedMonth.replace("-", "年") + "月", "\uFF09"), monthEntries.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      color: palette.textDim,
+      padding: 20,
+      fontSize: 13
+    }
+  }, "\u3053\u306E\u6708\u306E\u7D39\u4ECB\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 6
+    }
+  }, monthEntries.map(e => /*#__PURE__*/React.createElement("div", {
+    key: e.id,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "8px 0",
+      borderBottom: `1px solid ${palette.border}`
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: palette.white,
+      fontWeight: 600
+    }
+  }, e.customerName || "-", " \u69D8"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: palette.textDim
+    }
+  }, fmtDt(e.datetime), "\u3000\u62C5\u5F53: ", e.staff)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: palette.green,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, "+", formatYen(getCatchMargin(e))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: palette.textDim
+    }
+  }, Math.max(getPersonCount(e), 1), "\u4EBA")))))), /*#__PURE__*/React.createElement(PasswordChange, {
+    staffName: staffName,
+    staffList: staffList,
+    onUpdateStaff: onUpdateStaff
+  }));
+}
 function AdvanceRequest({
   staffName,
   advances,
@@ -2944,7 +4510,9 @@ function AdvanceRequest({
   const totalPending = pending.reduce((s, a) => s + a.amount, 0);
 
   // Calculate max advance = current month pay - already received - pending
-  const myPay = (entries || []).reduce((s, e) => s + Math.floor(getTaxExcluded(e) * (ROLES[e.role] || 0)), 0);
+  const myPayBase = (entries || []).reduce((s, e) => s + Math.floor(getTaxExcluded(e) * (ROLES[e.role] || 0)), 0);
+  const myCatchMargin = (entries || []).reduce((s, e) => s + getCatchMargin(e), 0);
+  const myPay = myPayBase - myCatchMargin;
   const available = Math.max(0, myPay - totalReceived - totalPending);
   const showMsg = (text, color) => {
     setMsg(text);
@@ -3357,9 +4925,10 @@ function CashboxManager({
   // Manual entries
   const manualIn = monthCashbox.filter(c => c.type === "in").reduce((s, c) => s + c.amount, 0);
   const manualOut = monthCashbox.filter(c => c.type === "out").reduce((s, c) => s + c.amount, 0);
+  const catchPaymentsOut = monthCashbox.filter(c => c.type === "catch").reduce((s, c) => s + c.amount, 0);
 
   // Cash balance
-  const cashBalance = totalCashIn - totalAdvanceOut + manualIn - manualOut;
+  const cashBalance = totalCashIn - totalAdvanceOut + manualIn - manualOut - catchPaymentsOut;
 
   // Build chronological ledger
   const ledger = [...cashSales.map(e => ({
@@ -3380,11 +4949,17 @@ function CashboxManager({
     in: 0,
     out: a.amount,
     cat: "cash"
-  })), ...monthCashbox.map(c => ({
+  })), ...monthCashbox.filter(c => c.type === "in" || c.type === "out").map(c => ({
     date: c.date,
     desc: c.memo || (c.type === "in" ? "入金" : "出金"),
     in: c.type === "in" ? c.amount : 0,
     out: c.type === "out" ? c.amount : 0,
+    cat: "cash"
+  })), ...monthCashbox.filter(c => c.type === "catch").map(c => ({
+    date: c.date,
+    desc: c.memo || `キャッチ支払い: ${c.catchName || ""}`,
+    in: 0,
+    out: c.amount,
     cat: "cash"
   }))].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   const months = [...new Set([...entries.map(e => getBusinessDate(e.datetime).slice(0, 7)), ...advances.filter(a => a.receivedDate).map(a => getBusinessDate(a.receivedDate).slice(0, 7)), ...cashbox.map(c => getBusinessDate(c.date).slice(0, 7))].filter(Boolean))].sort().reverse();
@@ -3533,7 +5108,7 @@ function CashboxManager({
       color: palette.textDim,
       marginTop: 4
     }
-  }, "\u5165\u91D1 ", formatYen(totalCashIn + manualIn), " / \u51FA\u91D1 ", formatYen(totalAdvanceOut + manualOut))), /*#__PURE__*/React.createElement("div", {
+  }, "\u5165\u91D1 ", formatYen(totalCashIn + manualIn), " / \u51FA\u91D1 ", formatYen(totalAdvanceOut + manualOut + catchPaymentsOut))), /*#__PURE__*/React.createElement("div", {
     style: {
       ...s.card,
       borderLeft: `3px solid ${palette.accent}`
@@ -3714,7 +5289,11 @@ function ManagerView({
   staffList,
   onUpdateStaff,
   advances,
-  onUpdateAdvances
+  onUpdateAdvances,
+  cashbox,
+  onUpdateCashbox,
+  expenses,
+  onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -3738,7 +5317,7 @@ function ManagerView({
       gap: 8,
       marginBottom: 16
     }
-  }, ["entry", "list", "salary"].map(t => {
+  }, ["entry", "list", "salary", "catches", "expense"].map(t => {
     const pendingAdv = t === "salary" ? advances.filter(a => a.status === "pending").length : 0;
     return /*#__PURE__*/React.createElement("button", {
       key: t,
@@ -3755,7 +5334,9 @@ function ManagerView({
     }, {
       entry: "伝票入力",
       list: "伝票一覧",
-      salary: "給与計算"
+      salary: "給与計算",
+      catches: "キャッチ管理",
+      expense: "経費申請"
     }[t], t === "entry" && activeCount > 0 && /*#__PURE__*/React.createElement("span", {
       style: {
         position: "absolute",
@@ -3859,7 +5440,8 @@ function ManagerView({
     isManager: true,
     openTabs: openTabs,
     onUpdateTabs: onUpdateTabs,
-    menu: menu
+    menu: menu,
+    catchList: (staffList || []).filter(s => s.role === "catch").map(s => s.name)
   }), tab === "list" && /*#__PURE__*/React.createElement(ReceiptTable, {
     entries: visibleEntries,
     canDelete: true,
@@ -3870,8 +5452,24 @@ function ManagerView({
     managerName: staffName
   }), /*#__PURE__*/React.createElement(SalarySummary, {
     entries: visibleEntries,
+    managerName: staffName,
+    expenses: expenses || [],
+    selectedMonth: selectedMonth
+  })), tab === "catches" && /*#__PURE__*/React.createElement(CatchManagement, {
+    entries: entries,
+    staffList: staffList,
+    cashbox: cashbox || [],
+    onUpdateCashbox: onUpdateCashbox,
     managerName: staffName
-  })), /*#__PURE__*/React.createElement(PasswordChange, {
+  }), tab === "expense" && /*#__PURE__*/React.createElement(ExpenseRequest, {
+    staffName: staffName,
+    expenses: expenses || [],
+    onUpdateExpenses: onUpdateExpenses
+  }), tab === "unpaid" && /*#__PURE__*/React.createElement(UnpaidTab, {
+    staffName: staffName,
+    openTabs: openTabs,
+    entries: entries
+  }), /*#__PURE__*/React.createElement(PasswordChange, {
     staffName: staffName,
     staffList: staffList,
     onUpdateStaff: onUpdateStaff
@@ -3887,7 +5485,9 @@ function OwnerView({
   onUpdateTabs,
   menu,
   staffList,
-  onUpdateStaff
+  onUpdateStaff,
+  expenses,
+  onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -3899,6 +5499,7 @@ function OwnerView({
   const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
   const mySales = myEntries.reduce((s, e) => s + e.amount, 0);
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
+  const pendingExpenseCount = (expenses || []).filter(e => e.status === "pending").length;
   return /*#__PURE__*/React.createElement("div", {
     style: s.container
   }, /*#__PURE__*/React.createElement("div", {
@@ -3907,7 +5508,7 @@ function OwnerView({
       gap: 8,
       marginBottom: 16
     }
-  }, ["entry", "list"].map(t => /*#__PURE__*/React.createElement("button", {
+  }, ["entry", "list", "expense", "approval", "unpaid"].map(t => /*#__PURE__*/React.createElement("button", {
     key: t,
     onClick: () => setTab(t),
     style: {
@@ -3921,7 +5522,10 @@ function OwnerView({
     }
   }, {
     entry: "伝票入力",
-    list: "自分の伝票"
+    list: "自分の伝票",
+    expense: "経費申請",
+    approval: "経費承認",
+    unpaid: "未収伝票"
   }[t], t === "entry" && activeCount > 0 && /*#__PURE__*/React.createElement("span", {
     style: {
       position: "absolute",
@@ -3938,7 +5542,23 @@ function OwnerView({
       alignItems: "center",
       justifyContent: "center"
     }
-  }, activeCount)))), tab !== "entry" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, activeCount), t === "approval" && pendingExpenseCount > 0 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      top: -6,
+      right: -6,
+      width: 18,
+      height: 18,
+      borderRadius: 99,
+      background: palette.red,
+      color: "#fff",
+      fontSize: 10,
+      fontWeight: 700,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, pendingExpenseCount)))), tab !== "entry" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       ...s.card,
       display: "flex",
@@ -3975,9 +5595,22 @@ function OwnerView({
     isManager: true,
     openTabs: openTabs,
     onUpdateTabs: onUpdateTabs,
-    menu: menu
+    menu: menu,
+    catchList: (staffList || []).filter(s => s.role === "catch").map(s => s.name)
   }), tab === "list" && /*#__PURE__*/React.createElement(ReceiptTable, {
     entries: myEntries
+  }), tab === "expense" && /*#__PURE__*/React.createElement(ExpenseRequest, {
+    staffName: staffName,
+    expenses: expenses || [],
+    onUpdateExpenses: onUpdateExpenses
+  }), tab === "approval" && /*#__PURE__*/React.createElement(ExpenseApproval, {
+    expenses: expenses || [],
+    onUpdateExpenses: onUpdateExpenses,
+    ownerName: staffName
+  }), tab === "unpaid" && /*#__PURE__*/React.createElement(UnpaidTab, {
+    staffName: staffName,
+    openTabs: openTabs,
+    entries: entries
   }), /*#__PURE__*/React.createElement(PasswordChange, {
     staffName: staffName,
     staffList: staffList,
@@ -3996,7 +5629,9 @@ function StaffView({
   staffList,
   onUpdateStaff,
   advances,
-  onUpdateAdvances
+  onUpdateAdvances,
+  expenses,
+  onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -4007,7 +5642,13 @@ function StaffView({
   const myEntries = allMyEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
   const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
   const mySales = myEntries.reduce((s, e) => s + e.amount, 0);
-  const myPay = myEntries.reduce((s, e) => s + Math.floor(getTaxExcluded(e) * (ROLES[e.role] || 0)), 0);
+  const myPayBase = myEntries.reduce((s, e) => s + Math.floor(getTaxExcluded(e) * (ROLES[e.role] || 0)), 0);
+  // キャッチ経由の伝票を担当した場合、人数 × CATCH_MARGIN を控除
+  const myCatchCount = myEntries.filter(e => e.catchName).length;
+  const myCatchMargin = myEntries.reduce((s, e) => s + getCatchMargin(e), 0);
+  // 当月承認済みの経費精算
+  const myExpenseReimburse = (expenses || []).filter(ex => ex.staff === staffName && ex.status === "approved" && (ex.date || "").startsWith(selectedMonth)).reduce((s, ex) => s + ex.amount, 0);
+  const myPay = myPayBase - myCatchMargin + myExpenseReimburse;
   const myReceivedAdvances = advances.filter(a => a.staff === staffName && a.status === "received" && a.requestDate && a.requestDate.startsWith(selectedMonth)).reduce((s, a) => s + a.amount, 0);
   const myNetPay = myPay - myReceivedAdvances;
   const activeCount = openTabs.filter(t => t.staff === staffName).length;
@@ -4020,7 +5661,7 @@ function StaffView({
       gap: 8,
       marginBottom: 16
     }
-  }, ["entry", "list", "advance"].map(t => /*#__PURE__*/React.createElement("button", {
+  }, ["entry", "list", "advance", "expense", "unpaid"].map(t => /*#__PURE__*/React.createElement("button", {
     key: t,
     onClick: () => setTab(t),
     style: {
@@ -4035,7 +5676,9 @@ function StaffView({
   }, {
     entry: "伝票入力",
     list: "自分の伝票",
-    advance: "前借り"
+    advance: "前借り",
+    expense: "経費申請",
+    unpaid: "未収伝票"
   }[t], t === "entry" && activeCount > 0 && /*#__PURE__*/React.createElement("span", {
     style: {
       position: "absolute",
@@ -4110,7 +5753,19 @@ function StaffView({
       ...s.statNum,
       color: palette.green
     }
-  }, formatYen(myPay)), myReceivedAdvances > 0 && /*#__PURE__*/React.createElement("div", {
+  }, formatYen(myPay)), myCatchCount > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#c084fc",
+      marginTop: 4
+    }
+  }, "\u30AD\u30E3\u30C3\u30C1\u63A7\u9664: ", myEntries.filter(e => e.catchName).reduce((s, e) => s + Math.max(getPersonCount(e), 1), 0), "\u4EBA\u5206 \xD7 ", formatYen(CATCH_MARGIN), " = \u2212", formatYen(myCatchMargin)), myExpenseReimburse > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: palette.green,
+      marginTop: 4
+    }
+  }, "\u7D4C\u8CBB\u7CBE\u7B97\uFF08\u627F\u8A8D\u6E08\uFF09: +", formatYen(myExpenseReimburse)), myReceivedAdvances > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: palette.textDim,
@@ -4130,7 +5785,8 @@ function StaffView({
     fixedStaff: staffName,
     openTabs: openTabs,
     onUpdateTabs: onUpdateTabs,
-    menu: menu
+    menu: menu,
+    catchList: (staffList || []).filter(s => s.role === "catch").map(s => s.name)
   }), tab === "list" && /*#__PURE__*/React.createElement(ReceiptTable, {
     entries: myEntries
   }), tab === "advance" && /*#__PURE__*/React.createElement(AdvanceRequest, {
@@ -4139,6 +5795,14 @@ function StaffView({
     onUpdateAdvances: onUpdateAdvances,
     entries: myEntries,
     selectedMonth: selectedMonth
+  }), tab === "expense" && /*#__PURE__*/React.createElement(ExpenseRequest, {
+    staffName: staffName,
+    expenses: expenses || [],
+    onUpdateExpenses: onUpdateExpenses
+  }), tab === "unpaid" && /*#__PURE__*/React.createElement(UnpaidTab, {
+    staffName: staffName,
+    openTabs: openTabs,
+    entries: entries
   }), /*#__PURE__*/React.createElement(PasswordChange, {
     staffName: staffName,
     staffList: staffList,
@@ -4253,7 +5917,7 @@ function MasterView({
       gap: 8,
       marginBottom: 16
     }
-  }, ["staff", "menu", "receipts", "unpaid", "cashbox", "advances"].map(t => /*#__PURE__*/React.createElement("button", {
+  }, ["staff", "menu", "receipts", "unpaid", "cashbox", "advances", "catches"].map(t => /*#__PURE__*/React.createElement("button", {
     key: t,
     onClick: () => setTab(t),
     style: {
@@ -4271,7 +5935,8 @@ function MasterView({
     receipts: "伝票一覧",
     unpaid: "未収",
     cashbox: "金庫管理",
-    advances: "前借り履歴"
+    advances: "前借り履歴",
+    catches: "キャッチ集計"
   }[t], t === "advances" && advances.filter(a => a.status !== "received").length > 0 && /*#__PURE__*/React.createElement("span", {
     style: {
       position: "absolute",
@@ -4335,7 +6000,9 @@ function MasterView({
     value: "manager"
   }, "\u7BA1\u7406\u8005"), /*#__PURE__*/React.createElement("option", {
     value: "owner"
-  }, "\u30AA\u30FC\u30CA\u30FC")), /*#__PURE__*/React.createElement("button", {
+  }, "\u30AA\u30FC\u30CA\u30FC"), /*#__PURE__*/React.createElement("option", {
+    value: "catch"
+  }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("button", {
     style: {
       ...s.btn,
       whiteSpace: "nowrap"
@@ -4422,7 +6089,7 @@ function MasterView({
     }), /*#__PURE__*/React.createElement("select", {
       style: {
         ...s.select,
-        width: 90,
+        width: 100,
         padding: "3px 6px",
         fontSize: 11
       },
@@ -4434,7 +6101,9 @@ function MasterView({
       value: "manager"
     }, "\u7BA1\u7406\u8005"), /*#__PURE__*/React.createElement("option", {
       value: "staff"
-    }, "\u30B9\u30BF\u30C3\u30D5")), /*#__PURE__*/React.createElement("button", {
+    }, "\u30B9\u30BF\u30C3\u30D5"), /*#__PURE__*/React.createElement("option", {
+      value: "catch"
+    }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("button", {
       onClick: () => removeStaff(st.name),
       style: {
         ...s.btnOutline,
@@ -4497,7 +6166,7 @@ function MasterView({
   }), /*#__PURE__*/React.createElement("select", {
     style: {
       ...s.select,
-      width: 90,
+      width: 100,
       padding: "3px 6px",
       fontSize: 11
     },
@@ -4509,7 +6178,9 @@ function MasterView({
     value: "manager"
   }, "\u7BA1\u7406\u8005"), /*#__PURE__*/React.createElement("option", {
     value: "staff"
-  }, "\u30B9\u30BF\u30C3\u30D5")), /*#__PURE__*/React.createElement("button", {
+  }, "\u30B9\u30BF\u30C3\u30D5"), /*#__PURE__*/React.createElement("option", {
+    value: "catch"
+  }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("button", {
     onClick: () => removeStaff(st.name),
     style: {
       ...s.btnOutline,
@@ -4579,7 +6250,7 @@ function MasterView({
     }), /*#__PURE__*/React.createElement("select", {
       style: {
         ...s.select,
-        width: 90,
+        width: 100,
         padding: "3px 6px",
         fontSize: 11
       },
@@ -4591,7 +6262,94 @@ function MasterView({
       value: "manager"
     }, "\u7BA1\u7406\u8005"), /*#__PURE__*/React.createElement("option", {
       value: "staff"
-    }, "\u30B9\u30BF\u30C3\u30D5")), /*#__PURE__*/React.createElement("button", {
+    }, "\u30B9\u30BF\u30C3\u30D5"), /*#__PURE__*/React.createElement("option", {
+      value: "catch"
+    }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("button", {
+      onClick: () => removeStaff(st.name),
+      style: {
+        ...s.btnOutline,
+        padding: "4px 10px",
+        fontSize: 11,
+        color: palette.red,
+        borderColor: palette.red
+      }
+    }, "\u524A\u9664"))))));
+  })(), (() => {
+    const catches = staffList.filter(st => st.role === "catch");
+    return /*#__PURE__*/React.createElement("div", {
+      style: s.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: s.cardTitle
+    }, "\u30AD\u30E3\u30C3\u30C1\uFF08", catches.length, "\u540D\uFF09"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim,
+        marginBottom: 12
+      }
+    }, "\u203B\u7D39\u4ECB1\u4EBA\u3042\u305F\u308A ", formatYen(CATCH_MARGIN), " \u306E\u30DE\u30FC\u30B8\u30F3\uFF08\u8907\u6570\u4EBA\u306A\u3089\xD7\u4EBA\u6570\uFF09\u3002\u7D66\u4E0E\u8A08\u7B97\u30FB\u6B69\u5408\u306E\u5BFE\u8C61\u5916"), catches.length === 0 ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: palette.textDim,
+        fontSize: 13
+      }
+    }, "\u30AD\u30E3\u30C3\u30C1\u306A\u3057") : /*#__PURE__*/React.createElement("div", null, catches.map(st => /*#__PURE__*/React.createElement("div", {
+      key: st.name,
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "8px 0",
+        borderBottom: `1px solid ${palette.border}`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 600,
+        color: palette.white
+      }
+    }, st.name), /*#__PURE__*/React.createElement("span", {
+      style: s.tag("rgba(168,85,247,0.15)", "#c084fc")
+    }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      style: {
+        ...s.input,
+        width: 70,
+        padding: "3px 6px",
+        fontSize: 11
+      },
+      type: "tel",
+      inputMode: "numeric",
+      pattern: "[0-9]*",
+      maxLength: 4,
+      value: st.password || "0000",
+      onChange: e => changePassword(st.name, e.target.value)
+    }), /*#__PURE__*/React.createElement("select", {
+      style: {
+        ...s.select,
+        width: 100,
+        padding: "3px 6px",
+        fontSize: 11
+      },
+      value: "catch",
+      onChange: e => changeRole(st.name, e.target.value)
+    }, /*#__PURE__*/React.createElement("option", {
+      value: "owner"
+    }, "\u30AA\u30FC\u30CA\u30FC"), /*#__PURE__*/React.createElement("option", {
+      value: "manager"
+    }, "\u7BA1\u7406\u8005"), /*#__PURE__*/React.createElement("option", {
+      value: "staff"
+    }, "\u30B9\u30BF\u30C3\u30D5"), /*#__PURE__*/React.createElement("option", {
+      value: "catch"
+    }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("button", {
       onClick: () => removeStaff(st.name),
       style: {
         ...s.btnOutline,
@@ -5211,7 +6969,175 @@ function MasterView({
   }), tab === "advances" && /*#__PURE__*/React.createElement(AdvanceHistory, {
     advances: advances,
     onUpdateAdvances: onUpdateAdvances
-  }));
+  }), tab === "catches" && (() => {
+    // キャッチ集計（月選択 + キャッチごとの紹介件数とマージン）
+    const catchEntries = entries.filter(e => e.catchName);
+    const monthCatchEntries = catchEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
+    const catchesList = staffList.filter(s => s.role === "catch");
+
+    // キャッチごとの集計
+    const summary = catchesList.map(c => {
+      const myEntries = monthCatchEntries.filter(e => e.catchName === c.name);
+      return {
+        name: c.name,
+        count: myEntries.length,
+        margin: myEntries.reduce((s, e) => s + getCatchMargin(e), 0),
+        entries: myEntries.slice().sort((a, b) => (b.datetime || "").localeCompare(a.datetime || ""))
+      };
+    }).sort((a, b) => b.count - a.count);
+
+    // 不明なキャッチ（既に削除されたが伝票が残っている）も拾う
+    const knownNames = new Set(catchesList.map(c => c.name));
+    const unknownNames = [...new Set(monthCatchEntries.map(e => e.catchName).filter(n => n && !knownNames.has(n)))];
+    for (const n of unknownNames) {
+      const myEntries = monthCatchEntries.filter(e => e.catchName === n);
+      summary.push({
+        name: n + "（削除済）",
+        count: myEntries.length,
+        margin: myEntries.reduce((s, e) => s + getCatchMargin(e), 0),
+        entries: myEntries
+      });
+    }
+    const totalCount = summary.reduce((s, x) => s + x.count, 0);
+    const totalMargin = summary.reduce((s, x) => s + x.margin, 0);
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...s.card,
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        color: palette.textDim
+      }
+    }, "\u6708\uFF1A"), /*#__PURE__*/React.createElement("select", {
+      style: {
+        ...s.select,
+        width: 160
+      },
+      value: selectedMonth,
+      onChange: e => setSelectedMonth(e.target.value)
+    }, months.length === 0 ? /*#__PURE__*/React.createElement("option", {
+      value: selectedMonth
+    }, selectedMonth.replace("-", "年") + "月") : months.map(m => /*#__PURE__*/React.createElement("option", {
+      key: m,
+      value: m
+    }, m.replace("-", "年") + "月"))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        const header = "キャッチ,紹介件数,マージン額";
+        const rows = summary.map(x => [x.name, x.count, x.margin].join(","));
+        rows.push(["合計", totalCount, totalMargin].join(","));
+        const csv = "\uFEFF" + [header, ...rows].join("\n");
+        const blob = new Blob([csv], {
+          type: "text/csv;charset=utf-8"
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `キャッチ集計_${selectedMonth}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      },
+      style: {
+        ...s.btnOutline,
+        padding: "6px 14px",
+        fontSize: 12,
+        color: palette.green,
+        borderColor: palette.green
+      }
+    }, "CSV\u51FA\u529B")), /*#__PURE__*/React.createElement("div", {
+      style: s.grid2
+    }, /*#__PURE__*/React.createElement("div", {
+      style: s.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: s.statLabel
+    }, selectedMonth.replace("-", "年") + "月", " \u306E\u7D39\u4ECB\u4EF6\u6570"), /*#__PURE__*/React.createElement("div", {
+      style: s.statNum
+    }, totalCount, " \u4EF6")), /*#__PURE__*/React.createElement("div", {
+      style: s.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: s.statLabel
+    }, selectedMonth.replace("-", "年") + "月", " \u306E\u30DE\u30FC\u30B8\u30F3\u7DCF\u984D"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...s.statNum,
+        color: palette.green
+      }
+    }, formatYen(totalMargin)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim,
+        marginTop: 4
+      }
+    }, "1\u4EBA\u3042\u305F\u308A ", formatYen(CATCH_MARGIN)))), /*#__PURE__*/React.createElement("div", {
+      style: s.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: s.cardTitle
+    }, "\u30AD\u30E3\u30C3\u30C1\u5225\u96C6\u8A08"), summary.length === 0 ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: "center",
+        color: palette.textDim,
+        padding: 20,
+        fontSize: 13
+      }
+    }, "\u3053\u306E\u6708\u306E\u30AD\u30E3\u30C3\u30C1\u7D39\u4ECB\u306F\u3042\u308A\u307E\u305B\u3093") : /*#__PURE__*/React.createElement("div", null, summary.map(x => /*#__PURE__*/React.createElement("div", {
+      key: x.name,
+      style: {
+        borderBottom: `1px solid ${palette.border}`,
+        padding: "10px 0"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: palette.white
+      }
+    }, x.name), /*#__PURE__*/React.createElement("span", {
+      style: s.tag("rgba(168,85,247,0.15)", "#c084fc")
+    }, "\u30AD\u30E3\u30C3\u30C1")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 12,
+        alignItems: "baseline"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: palette.white
+      }
+    }, x.count, " \u4EF6"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: palette.green,
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, formatYen(x.margin)))), x.entries.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: palette.textDim,
+        paddingLeft: 8
+      }
+    }, x.entries.slice(0, 5).map(e => `${e.customerName || "-"}様(${(e.datetime || "").slice(5, 10)})`).join("、"), x.entries.length > 5 && ` 他${x.entries.length - 5}件`))))));
+  })());
 }
 // ─── App ───
 const API_URL = "https://script.google.com/macros/s/AKfycbw_JJj_n_EwrdScVkOoVgvIp7JYTLNrazvEvwwwDQthCDVCbFa9Vl-Fyl9SF7qPk5gS/exec";
@@ -5221,6 +7147,7 @@ const STAFF_STORAGE_KEY = "sales-manager-staff";
 const MENU_STORAGE_KEY = "sales-manager-menu";
 const ADVANCE_STORAGE_KEY = "sales-manager-advances";
 const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
+const EXPENSE_STORAGE_KEY = "sales-manager-expenses";
 async function saveData(key, data) {
   const json = JSON.stringify(data);
   // Save to Google Sheets
@@ -5438,17 +7365,19 @@ function App() {
   const [menu, setMenu] = useState(() => loadDataSync(MENU_STORAGE_KEY) || DEFAULT_MENU);
   const [advances, setAdvances] = useState(() => loadDataSync(ADVANCE_STORAGE_KEY) || []);
   const [cashbox, setCashbox] = useState(() => loadDataSync(CASHBOX_STORAGE_KEY) || []);
+  const [expenses, setExpenses] = useState(() => loadDataSync(EXPENSE_STORAGE_KEY) || []);
   const [saveStatus, setSaveStatus] = useState("");
 
   // バックグラウンドで Google Sheets API から最新データを取得して同期
   useEffect(() => {
-    Promise.all([loadData(STORAGE_KEY), loadData(TABS_STORAGE_KEY), loadData(STAFF_STORAGE_KEY), loadData(MENU_STORAGE_KEY), loadData(ADVANCE_STORAGE_KEY), loadData(CASHBOX_STORAGE_KEY)]).then(([e, t, st, m, adv, cb]) => {
+    Promise.all([loadData(STORAGE_KEY), loadData(TABS_STORAGE_KEY), loadData(STAFF_STORAGE_KEY), loadData(MENU_STORAGE_KEY), loadData(ADVANCE_STORAGE_KEY), loadData(CASHBOX_STORAGE_KEY), loadData(EXPENSE_STORAGE_KEY)]).then(([e, t, st, m, adv, cb, ex]) => {
       if (e) setEntries(e);
       if (t) setOpenTabs(t);
       if (st) setStaffList(st);
       if (m) setMenu(m);
       if (adv) setAdvances(adv);
       if (cb) setCashbox(cb);
+      if (ex) setExpenses(ex);
     }).catch(() => {});
   }, []);
   const showSaved = () => {
@@ -5491,6 +7420,11 @@ function App() {
     await saveData(CASHBOX_STORAGE_KEY, list);
     showSaved();
   };
+  const updateExpenses = async list => {
+    setExpenses(list);
+    await saveData(EXPENSE_STORAGE_KEY, list);
+    showSaved();
+  };
   if (!user) return /*#__PURE__*/React.createElement(Login, {
     onLogin: (role, name) => setUser({
       role,
@@ -5517,8 +7451,8 @@ function App() {
       transition: "opacity .3s"
     }
   }, "\u2713 ", saveStatus), /*#__PURE__*/React.createElement("span", {
-    style: s.badge(user.role === "master" ? "orange" : user.role === "owner" ? "orange" : user.role === "manager" ? "blue" : "green")
-  }, user.role === "master" ? "マスター" : user.role === "owner" ? `オーナー (${user.name})` : user.role === "manager" ? `管理者 (${user.name})` : user.name), /*#__PURE__*/React.createElement("button", {
+    style: s.badge(user.role === "master" ? "orange" : user.role === "owner" ? "orange" : user.role === "manager" ? "blue" : user.role === "catch" ? "purple" : "green")
+  }, user.role === "master" ? "マスター" : user.role === "owner" ? `オーナー (${user.name})` : user.role === "manager" ? `管理者 (${user.name})` : user.role === "catch" ? `キャッチ (${user.name})` : user.name), /*#__PURE__*/React.createElement("button", {
     style: {
       ...s.btnOutline,
       padding: "6px 12px",
@@ -5547,7 +7481,9 @@ function App() {
     onUpdateTabs: updateTabs,
     menu: menu,
     staffList: staffList,
-    onUpdateStaff: updateStaff
+    onUpdateStaff: updateStaff,
+    expenses: expenses,
+    onUpdateExpenses: updateExpenses
   }) : user.role === "manager" ? /*#__PURE__*/React.createElement(ManagerView, {
     entries: entries,
     onAdd: addEntry,
@@ -5559,7 +7495,16 @@ function App() {
     staffList: staffList,
     onUpdateStaff: updateStaff,
     advances: advances,
-    onUpdateAdvances: updateAdvances
+    onUpdateAdvances: updateAdvances,
+    cashbox: cashbox,
+    onUpdateCashbox: updateCashbox,
+    expenses: expenses,
+    onUpdateExpenses: updateExpenses
+  }) : user.role === "catch" ? /*#__PURE__*/React.createElement(CatchView, {
+    entries: entries,
+    staffName: user.name,
+    staffList: staffList,
+    onUpdateStaff: updateStaff
   }) : /*#__PURE__*/React.createElement(StaffView, {
     entries: entries,
     staffName: user.name,
@@ -5570,7 +7515,9 @@ function App() {
     staffList: staffList,
     onUpdateStaff: updateStaff,
     advances: advances,
-    onUpdateAdvances: updateAdvances
+    onUpdateAdvances: updateAdvances,
+    expenses: expenses,
+    onUpdateExpenses: updateExpenses
   }));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
