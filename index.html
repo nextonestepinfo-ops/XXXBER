@@ -7367,10 +7367,15 @@ function App() {
   const [cashbox, setCashbox] = useState(() => loadDataSync(CASHBOX_STORAGE_KEY) || []);
   const [expenses, setExpenses] = useState(() => loadDataSync(EXPENSE_STORAGE_KEY) || []);
   const [saveStatus, setSaveStatus] = useState("");
+  // ★FIX: 初期APIロード完了まで全保存をブロック（新規端末による空データ上書きを防ぐ）
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   // バックグラウンドで Google Sheets API から最新データを取得して同期
   useEffect(() => {
+    let cancelled = false;
     Promise.all([loadData(STORAGE_KEY), loadData(TABS_STORAGE_KEY), loadData(STAFF_STORAGE_KEY), loadData(MENU_STORAGE_KEY), loadData(ADVANCE_STORAGE_KEY), loadData(CASHBOX_STORAGE_KEY), loadData(EXPENSE_STORAGE_KEY)]).then(([e, t, st, m, adv, cb, ex]) => {
+      if (cancelled) return;
       if (e) setEntries(e);
       if (t) setOpenTabs(t);
       if (st) setStaffList(st);
@@ -7378,52 +7383,137 @@ function App() {
       if (adv) setAdvances(adv);
       if (cb) setCashbox(cb);
       if (ex) setExpenses(ex);
-    }).catch(() => {});
+      setIsLoaded(true);
+    }).catch(err => {
+      if (cancelled) return;
+      console.error("初期読み込み失敗:", err);
+      setLoadError("データの読み込みに失敗しました: " + (err && err.message ? err.message : err));
+    });
+    return () => { cancelled = true; };
   }, []);
+  // ★FIX: 60秒ごとにサーバーから伝票を再取得（他端末の変更を反映）
+  useEffect(() => {
+    if (!isLoaded) return;
+    const interval = setInterval(async () => {
+      try {
+        const latest = await loadData(STORAGE_KEY);
+        if (latest && Array.isArray(latest)) setEntries(latest);
+      } catch (e) {}
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [isLoaded]);
   const showSaved = () => {
     setSaveStatus("保存しました");
     setTimeout(() => setSaveStatus(""), 2000);
   };
-  const addEntry = async e => {
-    const next = [...entries, e];
-    setEntries(next);
-    await saveData(STORAGE_KEY, next);
-    showSaved();
+  // ★FIX: ロード未完了・エラー時は保存を拒否
+  const guardLoaded = () => {
+    if (loadError) {
+      alert("サーバーとの同期に失敗しています。\n「↻ 再同期」ボタンを押して再試行してください。\n保存はデータ整合性のため停止しています。");
+      return false;
+    }
+    if (!isLoaded) {
+      alert("データの読み込み中です。少し待ってから再試行してください。");
+      return false;
+    }
+    return true;
   };
+  // ★FIX: 伝票追加時は、サーバーから最新を取得してマージしてから保存
+  const addEntry = async newEntry => {
+    if (!guardLoaded()) return;
+    setSaveStatus("保存中...");
+    try {
+      const latest = (await loadData(STORAGE_KEY)) || [];
+      const ids = new Set(latest.map(x => x.id));
+      const merged = ids.has(newEntry.id) ? latest : [...latest, newEntry];
+      if (merged.length < entries.length) {
+        const ok = confirm("警告: サーバーのデータ(" + latest.length + "件)が現在の表示(" + entries.length + "件)より少ない件数です。\n保存すると差分が失われる可能性があります。続行しますか？");
+        if (!ok) { setSaveStatus(""); return; }
+      }
+      setEntries(merged);
+      await saveData(STORAGE_KEY, merged);
+      showSaved();
+    } catch (err) {
+      console.error("保存エラー:", err);
+      alert("保存に失敗しました: " + (err && err.message ? err.message : err));
+      setSaveStatus("");
+    }
+  };
+  // ★FIX: 削除時もサーバーから最新を取得してから削除
   const deleteEntry = async id => {
-    const next = entries.filter(e => e.id !== id);
-    setEntries(next);
-    await saveData(STORAGE_KEY, next);
-    showSaved();
+    if (!guardLoaded()) return;
+    setSaveStatus("保存中...");
+    try {
+      const latest = (await loadData(STORAGE_KEY)) || entries;
+      const next = latest.filter(e => e.id !== id);
+      setEntries(next);
+      await saveData(STORAGE_KEY, next);
+      showSaved();
+    } catch (err) {
+      console.error("削除エラー:", err);
+      alert("削除に失敗しました: " + (err && err.message ? err.message : err));
+      setSaveStatus("");
+    }
   };
   const updateTabs = async tabs => {
+    if (!isLoaded || loadError) return;
     setOpenTabs(tabs);
     await saveData(TABS_STORAGE_KEY, tabs);
   };
   const updateStaff = async list => {
+    if (!guardLoaded()) return;
     setStaffList(list);
     await saveData(STAFF_STORAGE_KEY, list);
     showSaved();
   };
   const updateMenu = async m => {
+    if (!guardLoaded()) return;
     setMenu(m);
     await saveData(MENU_STORAGE_KEY, m);
     showSaved();
   };
   const updateAdvances = async list => {
+    if (!guardLoaded()) return;
     setAdvances(list);
     await saveData(ADVANCE_STORAGE_KEY, list);
     showSaved();
   };
   const updateCashbox = async list => {
+    if (!guardLoaded()) return;
     setCashbox(list);
     await saveData(CASHBOX_STORAGE_KEY, list);
     showSaved();
   };
   const updateExpenses = async list => {
+    if (!guardLoaded()) return;
     setExpenses(list);
     await saveData(EXPENSE_STORAGE_KEY, list);
     showSaved();
+  };
+  // ★FIX: 手動再同期
+  const resync = async () => {
+    setSaveStatus("同期中...");
+    try {
+      const [e, t, st, m, adv, cb, ex] = await Promise.all([
+        loadData(STORAGE_KEY), loadData(TABS_STORAGE_KEY), loadData(STAFF_STORAGE_KEY),
+        loadData(MENU_STORAGE_KEY), loadData(ADVANCE_STORAGE_KEY), loadData(CASHBOX_STORAGE_KEY),
+        loadData(EXPENSE_STORAGE_KEY)
+      ]);
+      if (e) setEntries(e);
+      if (t) setOpenTabs(t);
+      if (st) setStaffList(st);
+      if (m) setMenu(m);
+      if (adv) setAdvances(adv);
+      if (cb) setCashbox(cb);
+      if (ex) setExpenses(ex);
+      setLoadError("");
+      if (!isLoaded) setIsLoaded(true);
+      setSaveStatus("同期完了");
+      setTimeout(() => setSaveStatus(""), 1500);
+    } catch (err) {
+      setLoadError("再同期失敗: " + (err && err.message ? err.message : err));
+      setSaveStatus("");
+    }
   };
   if (!user) return /*#__PURE__*/React.createElement(Login, {
     onLogin: (role, name) => setUser({
@@ -7444,7 +7534,16 @@ function App() {
       alignItems: "center",
       gap: 12
     }
-  }, saveStatus && /*#__PURE__*/React.createElement("span", {
+  }, !isLoaded && !loadError && /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 11, color: palette.orange, fontWeight: 600 }
+  }, "\u27F3 同期中..."), loadError && /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 11, color: palette.red, fontWeight: 600, cursor: "help" },
+    title: loadError
+  }, "\u26A0 同期エラー（保存停止中）"), (isLoaded || loadError) && /*#__PURE__*/React.createElement("button", {
+    style: { ...s.btnOutline, padding: "4px 10px", fontSize: 11 },
+    onClick: resync,
+    title: "サーバーから最新データを再取得"
+  }, "\u21BB 再同期"), saveStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
       color: palette.green,
