@@ -2552,39 +2552,7 @@ function ReceiptTable({
       onClose: () => setShowReceipt(false)
     }));
   }
-  return /*#__PURE__*/React.createElement("div", null, customers.length > 1 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      marginBottom: 10,
-      flexWrap: "wrap"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setFilterCustomer("all"),
-    style: {
-      ...s.btnOutline,
-      padding: "5px 12px",
-      fontSize: 11,
-      ...(filterCustomer === "all" ? {
-        background: palette.accentSoft,
-        color: palette.accent,
-        borderColor: palette.accent
-      } : {})
-    }
-  }, "\u5168\u54E1"), customers.map(c => /*#__PURE__*/React.createElement("button", {
-    key: c,
-    onClick: () => setFilterCustomer(c),
-    style: {
-      ...s.btnOutline,
-      padding: "5px 12px",
-      fontSize: 11,
-      ...(filterCustomer === c ? {
-        background: palette.accentSoft,
-        color: palette.accent,
-        borderColor: palette.accent
-      } : {})
-    }
-  }, c))), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       ...s.card,
       padding: 0,
@@ -2651,11 +2619,16 @@ function SalarySummary({
   staffName,
   managerName,
   expenses = [],
-  selectedMonth
+  selectedMonth,
+  staffList = []
 }) {
   const filtered = staffName ? entries.filter(e => e.staff === staffName) : entries;
+  // 管理者報酬はスタッフ（部下 = role:"staff"）の売上に対してのみ発生
+  const subordinateNames = new Set((staffList || []).filter(st => st.role === "staff").map(st => st.name));
   const byStaff = {};
   for (const e of filtered) {
+    // 管理者ビューの一覧からは本人の行を除外（本人の売上・報酬は下の管理者カードで別表示）
+    if (managerName && e.staff === managerName) continue;
     const taxEx = getTaxExcluded(e);
     if (!byStaff[e.staff]) byStaff[e.staff] = {
       total: 0,
@@ -2669,7 +2642,7 @@ function SalarySummary({
     byStaff[e.staff].total += e.amount;
     byStaff[e.staff].taxExcluded += taxEx;
     byStaff[e.staff].pay += Math.floor(taxEx * (ROLES[e.role] || 0));
-    byStaff[e.staff].mgrShare += Math.floor(taxEx * (MGR_RATES[e.role] || 0));
+    byStaff[e.staff].mgrShare += subordinateNames.has(e.staff) ? Math.floor(taxEx * (MGR_RATES[e.role] || 0)) : 0;
     byStaff[e.staff].companyShare += Math.floor(taxEx * (COMPANY_RATES[e.role] || 0));
     // キャッチ経由の伝票を担当した場合、担当者から「人数 × CATCH_MARGIN」を直接控除
     if (e.catchName) {
@@ -2685,6 +2658,7 @@ function SalarySummary({
     return true;
   });
   for (const ex of approvedExpenses) {
+    if (managerName && ex.staff === managerName) continue;
     if (!byStaff[ex.staff]) byStaff[ex.staff] = {
       total: 0,
       taxExcluded: 0,
@@ -2701,10 +2675,10 @@ function SalarySummary({
     byStaff[name].expenseReimburse = byStaff[name].expenseReimburse || 0;
     byStaff[name].netPay = byStaff[name].pay - byStaff[name].catchMargin + byStaff[name].expenseReimburse;
   }
-  const totalAllSales = filtered.reduce((s, e) => s + e.amount, 0);
+  const totalAllSales = Object.values(byStaff).reduce((s, v) => s + v.total, 0);
   const totalTaxExcluded = Object.values(byStaff).reduce((s, v) => s + v.taxExcluded, 0);
   const totalMgrShare = Object.values(byStaff).reduce((s, v) => s + v.mgrShare, 0);
-  const perMgrShare = Math.floor(totalMgrShare / MGR_SPLIT); // 各管理者10%ずつ
+  const perMgrShare = Object.values(byStaff).reduce((s, v) => s + Math.floor(v.mgrShare / MGR_SPLIT), 0); // 各管理者10%ずつ
 
   // Manager's own sales
   const mgrOwnEntries = managerName ? filtered.filter(e => e.staff === managerName) : [];
@@ -2733,11 +2707,9 @@ function SalarySummary({
     style: s.th
   }, "\u30AD\u30E3\u30C3\u30C1\u63A7\u9664"), /*#__PURE__*/React.createElement("th", {
     style: s.th
-  }, "\u7D4C\u8CBB\u7CBE\u7B97"), /*#__PURE__*/React.createElement("th", {
-    style: s.th
   }, "\u5B9F\u652F\u7D66"), /*#__PURE__*/React.createElement("th", {
     style: s.th
-  }, "\u7BA1\u7406\u800520%"))), /*#__PURE__*/React.createElement("tbody", null, Object.entries(byStaff).map(([name, d]) => /*#__PURE__*/React.createElement("tr", {
+  }, "\u7BA1\u7406\u800510%"))), /*#__PURE__*/React.createElement("tbody", null, Object.entries(byStaff).map(([name, d]) => /*#__PURE__*/React.createElement("tr", {
     key: name
   }, /*#__PURE__*/React.createElement("td", {
     style: {
@@ -2764,12 +2736,6 @@ function SalarySummary({
   }, d.catchMargin > 0 ? `−${formatYen(d.catchMargin)}` : "−"), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
-      fontVariantNumeric: "tabular-nums",
-      color: d.expenseReimburse > 0 ? palette.green : palette.textDim
-    }
-  }, d.expenseReimburse > 0 ? `+${formatYen(d.expenseReimburse)}` : "−"), /*#__PURE__*/React.createElement("td", {
-    style: {
-      ...s.td,
       color: palette.green,
       fontWeight: 700,
       fontVariantNumeric: "tabular-nums"
@@ -2779,7 +2745,7 @@ function SalarySummary({
       ...s.td,
       fontVariantNumeric: "tabular-nums"
     }
-  }, formatYen(d.mgrShare)))), /*#__PURE__*/React.createElement("tr", {
+  }, formatYen(Math.floor(d.mgrShare / MGR_SPLIT))))), /*#__PURE__*/React.createElement("tr", {
     style: {
       borderTop: `2px solid ${palette.border}`
     }
@@ -2815,20 +2781,13 @@ function SalarySummary({
       fontVariantNumeric: "tabular-nums",
       color: palette.green
     }
-  }, "+", formatYen(Object.values(byStaff).reduce((s, v) => s + (v.expenseReimburse || 0), 0))), /*#__PURE__*/React.createElement("td", {
-    style: {
-      ...s.td,
-      fontWeight: 700,
-      fontVariantNumeric: "tabular-nums",
-      color: palette.green
-    }
   }, formatYen(Object.values(byStaff).reduce((s, v) => s + v.netPay, 0))), /*#__PURE__*/React.createElement("td", {
     style: {
       ...s.td,
       fontWeight: 700,
       fontVariantNumeric: "tabular-nums"
     }
-  }, formatYen(totalMgrShare)))))), managerName && (() => {
+  }, formatYen(perMgrShare)))))), managerName && (() => {
     // 管理者本人がキャッチ経由を担当した分のみ控除
     const mgrTotal = mgrOwnTaxExcluded + perMgrShare - mgrOwnCatchMargin;
     const bonus = calcManagerBonus(mgrTotal);
@@ -5454,7 +5413,8 @@ function ManagerView({
     entries: visibleEntries,
     managerName: staffName,
     expenses: expenses || [],
-    selectedMonth: selectedMonth
+    selectedMonth: selectedMonth,
+    staffList: staffList
   })), tab === "catches" && /*#__PURE__*/React.createElement(CatchManagement, {
     entries: entries,
     staffList: staffList,
