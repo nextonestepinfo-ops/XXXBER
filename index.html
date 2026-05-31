@@ -461,6 +461,26 @@ function getBusinessDate(datetime) {
   dt.setDate(dt.getDate() - 1);
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
 }
+// 今月の "YYYY-MM"
+function currentMonthStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+// 配列群の datetime/date から最新の "YYYY-MM" を求める。データが無ければ今月。
+// ★初期表示を「データがある最新月」にするためのヘルパー
+function latestMonthStr(...lists) {
+  const months = [];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      const v = e && (e.datetime || e.date || e.requestDate || e.receivedDate);
+      if (v && typeof v === "string" && v.length >= 7) months.push(v.slice(0, 7));
+    }
+  }
+  if (months.length === 0) return currentMonthStr();
+  months.sort();
+  return months[months.length - 1];
+}
 function roleTagColors(role) {
   if (role === "従業員") return [palette.greenSoft, palette.green];
   return [palette.cardAlt, palette.textDim];
@@ -4278,10 +4298,7 @@ function CatchView({
   staffList,
   onUpdateStaff
 }) {
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries));
   const myCatchEntries = entries.filter(e => e.catchName === staffName);
   const monthEntries = myCatchEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth)).slice().sort((a, b) => (b.datetime || "").localeCompare(a.datetime || ""));
   const months = [...new Set(myCatchEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
@@ -4840,10 +4857,7 @@ function CashboxManager({
   cashbox,
   onUpdateCashbox
 }) {
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries, advances, cashbox));
   // 期間指定モード（"month": 月単位 / "day": 営業日範囲）
   const [rangeMode, setRangeMode] = useState("month");
   const [fromDate, setFromDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -5255,10 +5269,7 @@ function ManagerView({
   onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries));
   // Show own entries + staff entries only (not other managers)
   const staffNames = staffList.filter(s => s.role === "staff").map(s => s.name);
   const visibleNames = [staffName, ...staffNames];
@@ -5450,10 +5461,7 @@ function OwnerView({
   onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries));
   const allMyEntries = entries.filter(e => e.staff === staffName);
   const myEntries = allMyEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
   const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
@@ -5594,10 +5602,7 @@ function StaffView({
   onUpdateExpenses
 }) {
   const [tab, setTab] = useState("entry");
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries));
   const allMyEntries = entries.filter(e => e.staff === staffName);
   const myEntries = allMyEntries.filter(e => e.datetime && e.datetime.startsWith(selectedMonth));
   const months = [...new Set(allMyEntries.map(e => e.datetime?.slice(0, 7)).filter(Boolean))].sort().reverse();
@@ -5794,10 +5799,7 @@ function MasterView({
   const [newItemCat, setNewItemCat] = useState(menu[0]?.cat || "");
   const [newItemName, setNewItemName] = useState("");
   const [newItemPrice, setNewItemPrice] = useState("");
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => latestMonthStr(entries));
   // 伝票一覧の期間指定モード（"month": 月選択 / "range": 日付範囲）
   const [rangeMode, setRangeMode] = useState("month");
   const [fromDate, setFromDate] = useState(() => {
@@ -7357,7 +7359,15 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const latest = await loadData(STORAGE_KEY);
-        if (latest && Array.isArray(latest)) setEntries(latest);
+        if (!latest || !Array.isArray(latest)) return;
+        // ★FIX: サーバーが現在より大幅に少ない件数を返した場合は採用しない（誤上書き・データ消失防止）
+        setEntries(prev => {
+          if (Array.isArray(prev) && prev.length > 0 && latest.length < prev.length) {
+            console.warn("自動同期スキップ: サーバー" + latest.length + "件 < 現在" + prev.length + "件");
+            return prev;
+          }
+          return latest;
+        });
       } catch (e) {}
     }, 60000);
     return () => clearInterval(interval);
