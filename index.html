@@ -2072,12 +2072,13 @@ function ReceiptModal({
           data: receiptData
         })
       });
-      const json = await res.json();
-      if (json.success && json.url) {
+      const text = await res.text();
+      const json = parseApiJson(text, "領収書生成");
+      if (res.ok && json.success && json.url) {
         setDriveUrl(json.url);
         setStatus("done");
       } else {
-        setErrorMsg(json.error || "生成に失敗しました");
+        setErrorMsg(json.error || "生成に失敗しました: HTTP " + res.status);
         setStatus("error");
       }
     } catch (e) {
@@ -7110,30 +7111,123 @@ const MENU_STORAGE_KEY = "sales-manager-menu";
 const ADVANCE_STORAGE_KEY = "sales-manager-advances";
 const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
 const EXPENSE_STORAGE_KEY = "sales-manager-expenses";
-async function saveData(key, data) {
-  const json = JSON.stringify(data);
-  // Save to Google Sheets
-  if (API_URL && !API_URL.startsWith("ここ")) {
-    try {
-      await fetch(API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain"
-        },
-        body: JSON.stringify({
-          action: "set",
-          key,
-          value: json
-        })
-      });
-    } catch (e) {
-      console.error("API save failed:", e);
-    }
+const SYNC_OUTBOX_KEY = "sales-manager-sync-outbox";
+const DATA_KEYS = [STORAGE_KEY, TABS_STORAGE_KEY, STAFF_STORAGE_KEY, MENU_STORAGE_KEY, ADVANCE_STORAGE_KEY, CASHBOX_STORAGE_KEY, EXPENSE_STORAGE_KEY];
+const DATA_KEY_LABELS = {
+  [STORAGE_KEY]: "売上",
+  [TABS_STORAGE_KEY]: "未確定伝票",
+  [STAFF_STORAGE_KEY]: "スタッフ",
+  [MENU_STORAGE_KEY]: "メニュー",
+  [ADVANCE_STORAGE_KEY]: "前借り",
+  [CASHBOX_STORAGE_KEY]: "金庫",
+  [EXPENSE_STORAGE_KEY]: "経費"
+};
+function apiReady() {
+  return API_URL && !API_URL.startsWith("ここ");
+}
+function readJsonStorage(key, fallback) {
+  try {
+    const val = localStorage.getItem(key);
+    if (!val) return fallback;
+    return JSON.parse(val);
+  } catch (e) {
+    return fallback;
   }
-  // Also save to localStorage as fallback
+}
+function writeJsonStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn("localStorage write failed:", key, e);
+  }
+}
+function getSyncOutbox() {
+  const items = readJsonStorage(SYNC_OUTBOX_KEY, []);
+  return Array.isArray(items) ? items : [];
+}
+function setSyncOutbox(items) {
+  writeJsonStorage(SYNC_OUTBOX_KEY, Array.isArray(items) ? items : []);
+}
+function queueSyncOutbox(key, data, error) {
+  const items = getSyncOutbox();
+  items.push({
+    id: "sync-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+    key,
+    label: DATA_KEY_LABELS[key] || key,
+    data,
+    error: error && error.message ? error.message : String(error || ""),
+    createdAt: new Date().toISOString()
+  });
+  setSyncOutbox(items);
+}
+function parseApiJson(text, context) {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (e) {
+    throw new Error(context + "の応答がJSONではありません");
+  }
+}
+function entrySignature(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  return [
+    entry.datetime || "",
+    entry.customerName || entry.customer || "",
+    entry.staff || "",
+    entry.payMethod || "",
+    Number(entry.amount || 0),
+    Number(entry.subtotal || 0),
+    Number(entry.tax || 0),
+    Number(entry.cardFee || 0)
+  ].join("|");
+}
+function mergeEntriesByIdentity() {
+  const byId = new Map();
+  const bySig = new Map();
+  Array.from(arguments).forEach(list => {
+    (Array.isArray(list) ? list : []).forEach(entry => {
+      const id = entry && entry.id;
+      const sig = entrySignature(entry);
+      if (id && byId.has(id)) return;
+      if (sig && bySig.has(sig)) return;
+      if (id) byId.set(id, entry);
+      if (sig) bySig.set(sig, entry);
+    });
+  });
+  return Array.from(byId.values()).concat(Array.from(bySig.values()).filter(entry => !(entry && entry.id && byId.has(entry.id))));
+}
+async function saveData(key, data, options = {}) {
+  const json = JSON.stringify(data);
   try {
     localStorage.setItem(key, json);
   } catch (e) {}
+  if (!apiReady()) {
+    const error = new Error("保存先GASが未設定です");
+    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, error);
+    throw error;
+  }
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain"
+      },
+      body: JSON.stringify({
+        action: "set",
+        key,
+        value: json
+      })
+    });
+    const text = await res.text();
+    const parsed = parseApiJson(text, "保存先");
+    if (!res.ok || parsed.success !== true) {
+      throw new Error(parsed.error || "保存先エラー: HTTP " + res.status);
+    }
+    return parsed;
+  } catch (e) {
+    console.error("API save failed:", e);
+    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, e);
+    throw e;
+  }
 }
 
 // localStorage から同期的に読み込む（高速・初期表示用）
@@ -7145,33 +7239,72 @@ function loadDataSync(key) {
   return null;
 }
 async function loadData(key) {
-  // Try Google Sheets first
-  if (API_URL && !API_URL.startsWith("ここ")) {
-    try {
-      const res = await fetch(`${API_URL}?action=get&key=${encodeURIComponent(key)}`);
-      const json = await res.json();
-      if (json.success && json.value) {
-        const parsed = JSON.parse(json.value);
-        try {
-          localStorage.setItem(key, JSON.stringify(parsed));
-        } catch (e) {}
-        return parsed;
-      }
-    } catch (e) {
-      console.error("API load failed, using localStorage:", e);
+  if (apiReady()) {
+    const res = await fetch(`${API_URL}?action=get&key=${encodeURIComponent(key)}`);
+    const text = await res.text();
+    const json = parseApiJson(text, "読込先");
+    if (!res.ok || json.success !== true) {
+      throw new Error(json.error || "読込先エラー: HTTP " + res.status);
     }
+    if (json.value) {
+      const parsed = JSON.parse(json.value);
+      const local = readJsonStorage(key, null);
+      const next = key === STORAGE_KEY && Array.isArray(local) ? mergeEntriesByIdentity(parsed, local) : parsed;
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    }
+    return null;
   }
-  // Fallback to localStorage
   try {
     const val = localStorage.getItem(key);
     if (val) return JSON.parse(val);
   } catch (e) {}
-  // Fallback to window.storage (Claude artifact)
   try {
     const result = await window.storage.get(key);
     if (result && result.value) return JSON.parse(result.value);
   } catch (e) {}
   return null;
+}
+async function retrySyncOutbox() {
+  const items = getSyncOutbox();
+  const remaining = [];
+  for (const item of items) {
+    try {
+      await saveData(item.key, item.data, { queueOnFailure: false });
+    } catch (e) {
+      remaining.push({
+        ...item,
+        error: e && e.message ? e.message : String(e || ""),
+        lastTriedAt: new Date().toISOString()
+      });
+    }
+  }
+  setSyncOutbox(remaining);
+  return {
+    retried: items.length,
+    remaining: remaining.length
+  };
+}
+function exportSyncOutbox() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    outbox: getSyncOutbox(),
+    localData: {}
+  };
+  DATA_KEYS.forEach(key => {
+    payload.localData[key] = readJsonStorage(key, []);
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "xxxber-sync-outbox-" + Date.now() + ".json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Receipt Viewer (QR code destination) ───
@@ -7332,6 +7465,8 @@ function App() {
   // ★FIX: 初期APIロード完了まで全保存をブロック（新規端末による空データ上書きを防ぐ）
   const [isLoaded, setIsLoaded] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [syncOutboxCount, setSyncOutboxCount] = useState(() => getSyncOutbox().length);
+  const markSyncState = () => setSyncOutboxCount(getSyncOutbox().length);
 
   // バックグラウンドで Google Sheets API から最新データを取得して同期
   useEffect(() => {
@@ -7373,8 +7508,15 @@ function App() {
     return () => clearInterval(interval);
   }, [isLoaded]);
   const showSaved = () => {
+    markSyncState();
     setSaveStatus("保存しました");
     setTimeout(() => setSaveStatus(""), 2000);
+  };
+  const handleSaveError = (label, err) => {
+    markSyncState();
+    console.error(label + "エラー:", err);
+    alert(label + "に失敗しました: " + (err && err.message ? err.message : err) + "\n未同期データとして端末に退避しました。");
+    setSaveStatus("");
   };
   // ★FIX: ロード未完了・エラー時は保存を拒否
   const guardLoaded = () => {
@@ -7404,9 +7546,7 @@ function App() {
       await saveData(STORAGE_KEY, merged);
       showSaved();
     } catch (err) {
-      console.error("保存エラー:", err);
-      alert("保存に失敗しました: " + (err && err.message ? err.message : err));
-      setSaveStatus("");
+      handleSaveError("保存", err);
     }
   };
   // ★FIX: 削除時もサーバーから最新を取得してから削除
@@ -7420,45 +7560,109 @@ function App() {
       await saveData(STORAGE_KEY, next);
       showSaved();
     } catch (err) {
-      console.error("削除エラー:", err);
-      alert("削除に失敗しました: " + (err && err.message ? err.message : err));
-      setSaveStatus("");
+      handleSaveError("削除", err);
     }
   };
   const updateTabs = async tabs => {
     if (!isLoaded || loadError) return;
-    setOpenTabs(tabs);
-    await saveData(TABS_STORAGE_KEY, tabs);
+    const nextInput = Array.isArray(tabs) ? tabs : [];
+    const nextIds = new Set(nextInput.map(t => t && t.id).filter(Boolean));
+    const removedIds = new Set((openTabs || []).filter(t => t && t.id && !nextIds.has(t.id)).map(t => t.id));
+    let nextTabs = nextInput;
+    try {
+      const latest = (await loadData(TABS_STORAGE_KEY)) || [];
+      const byId = new Map();
+      (Array.isArray(latest) ? latest : []).forEach(t => {
+        if (t && t.id && !removedIds.has(t.id)) byId.set(t.id, t);
+      });
+      nextInput.forEach(t => {
+        if (t && t.id) byId.set(t.id, t);
+      });
+      nextTabs = Array.from(byId.values());
+    } catch (err) {
+      handleSaveError("未確定伝票の同期", err);
+      return;
+    }
+    setOpenTabs(nextTabs);
+    setSaveStatus("保存中...");
+    try {
+      await saveData(TABS_STORAGE_KEY, nextTabs);
+      showSaved();
+    } catch (err) {
+      handleSaveError("未確定伝票の保存", err);
+    }
   };
   const updateStaff = async list => {
     if (!guardLoaded()) return;
     setStaffList(list);
-    await saveData(STAFF_STORAGE_KEY, list);
-    showSaved();
+    setSaveStatus("保存中...");
+    try {
+      await saveData(STAFF_STORAGE_KEY, list);
+      showSaved();
+    } catch (err) {
+      handleSaveError("スタッフ保存", err);
+    }
   };
   const updateMenu = async m => {
     if (!guardLoaded()) return;
     setMenu(m);
-    await saveData(MENU_STORAGE_KEY, m);
-    showSaved();
+    setSaveStatus("保存中...");
+    try {
+      await saveData(MENU_STORAGE_KEY, m);
+      showSaved();
+    } catch (err) {
+      handleSaveError("メニュー保存", err);
+    }
   };
   const updateAdvances = async list => {
     if (!guardLoaded()) return;
     setAdvances(list);
-    await saveData(ADVANCE_STORAGE_KEY, list);
-    showSaved();
+    setSaveStatus("保存中...");
+    try {
+      await saveData(ADVANCE_STORAGE_KEY, list);
+      showSaved();
+    } catch (err) {
+      handleSaveError("前借り保存", err);
+    }
   };
   const updateCashbox = async list => {
     if (!guardLoaded()) return;
     setCashbox(list);
-    await saveData(CASHBOX_STORAGE_KEY, list);
-    showSaved();
+    setSaveStatus("保存中...");
+    try {
+      await saveData(CASHBOX_STORAGE_KEY, list);
+      showSaved();
+    } catch (err) {
+      handleSaveError("金庫保存", err);
+    }
   };
   const updateExpenses = async list => {
     if (!guardLoaded()) return;
     setExpenses(list);
-    await saveData(EXPENSE_STORAGE_KEY, list);
-    showSaved();
+    setSaveStatus("保存中...");
+    try {
+      await saveData(EXPENSE_STORAGE_KEY, list);
+      showSaved();
+    } catch (err) {
+      handleSaveError("経費保存", err);
+    }
+  };
+  const retryPendingSync = async () => {
+    if (!getSyncOutbox().length) return;
+    setSaveStatus("未同期を再送中...");
+    try {
+      const result = await retrySyncOutbox();
+      markSyncState();
+      if (result.remaining) {
+        alert("未同期データがまだ " + result.remaining + "件残っています。\n通信状況を確認して再送するか、JSON出力で回収してください。");
+        setSaveStatus("");
+      } else {
+        setSaveStatus("未同期を再送しました");
+        setTimeout(() => setSaveStatus(""), 2000);
+      }
+    } catch (err) {
+      handleSaveError("未同期再送", err);
+    }
   };
   // ★FIX: 手動再同期
   const resync = async () => {
@@ -7478,6 +7682,7 @@ function App() {
       if (ex) setExpenses(ex);
       setLoadError("");
       if (!isLoaded) setIsLoaded(true);
+      markSyncState();
       setSaveStatus("同期完了");
       setTimeout(() => setSaveStatus(""), 1500);
     } catch (err) {
@@ -7519,7 +7724,25 @@ function App() {
       color: palette.green,
       transition: "opacity .3s"
     }
-  }, "\u2713 ", saveStatus), /*#__PURE__*/React.createElement("span", {
+  }, "\u2713 ", saveStatus), syncOutboxCount > 0 && /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btnOutline,
+      padding: "4px 10px",
+      fontSize: 11,
+      color: palette.red,
+      borderColor: palette.red
+    },
+    onClick: retryPendingSync,
+    title: "保存に失敗して端末に残っているデータを再送します"
+  }, "\u26A0 未同期 ", syncOutboxCount, "件"), syncOutboxCount > 0 && /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...s.btnOutline,
+      padding: "4px 10px",
+      fontSize: 11
+    },
+    onClick: exportSyncOutbox,
+    title: "未同期データをJSONで出力します"
+  }, "JSON出力"), /*#__PURE__*/React.createElement("span", {
     style: s.badge(user.role === "master" ? "orange" : user.role === "owner" ? "orange" : user.role === "manager" ? "blue" : user.role === "catch" ? "purple" : "green")
   }, user.role === "master" ? "マスター" : user.role === "owner" ? `オーナー (${user.name})` : user.role === "manager" ? `管理者 (${user.name})` : user.role === "catch" ? `キャッチ (${user.name})` : user.name), /*#__PURE__*/React.createElement("button", {
     style: {

@@ -447,8 +447,12 @@ setInterval(refreshRecoveryPanel, 5000);`;
       html = html.replaceAll("売上管理システム", "売上管理・新環境");
       html = replaceOnce(html, "</head>", '  <script src="./seed-data.js"><\/script>\n</head>', "seed script");
       html = replaceOnce(html, 'const API_URL = "' + PRODUCTION_API + '";', apiConfigPatch, "API config");
-      html = replaceOnce(html, 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";', 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";\n' + recoveryHelpersPatch, "recovery helpers");
-      html = replaceRegex(html, /async function saveData\(key, data\) \{[\s\S]*?\/\/ localStorage から同期的に読み込む（高速・初期表示用）/, saveDataPatch, "saveData");
+      if (html.includes('const SYNC_OUTBOX_KEY = "sales-manager-sync-outbox";')) {
+        html = replaceRegex(html, /const SYNC_OUTBOX_KEY = "sales-manager-sync-outbox";[\s\S]*?async function saveData/, recoveryHelpersPatch + "\nasync function saveData", "recovery helpers");
+      } else {
+        html = replaceOnce(html, 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";', 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";\n' + recoveryHelpersPatch, "recovery helpers");
+      }
+      html = replaceRegex(html, /async function saveData\(key, data(?:, options = \{\})?\) \{[\s\S]*?\/\/ localStorage から同期的に読み込む（高速・初期表示用）/, saveDataPatch, "saveData");
       html = replaceRegex(html, /async function loadData\(key\) \{[\s\S]*?\/\/ ─── Receipt Viewer \(QR code destination\) ───/, loadDataPatch, "loadData");
       html = replaceOnce(html, "const res = await fetch(API_URL, {", receiptFetchPatch, "receipt fetch");
       html = replaceRegex(html, /const showSaved = \(\) => \{[\s\S]*?  \};\r?\n  \/\/ ★FIX: ロード未完了・エラー時は保存を拒否/, showSavedPatch + "\n  // ★FIX: ロード未完了・エラー時は保存を拒否", "showSaved");
