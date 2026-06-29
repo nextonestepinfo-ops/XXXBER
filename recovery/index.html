@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>売上管理・新環境</title>
+  <script src="./seed-data.js"></script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2937;
+      background: #f7f3ec;
+    }
+    .loader {
+      width: min(560px, calc(100vw - 32px));
+      padding: 20px;
+      border: 1px solid #e5ded3;
+      border-radius: 8px;
+      background: #fffaf3;
+      box-shadow: 0 12px 30px rgba(31, 41, 55, 0.08);
+    }
+    .loader h1 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      line-height: 1.35;
+    }
+    .loader p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #4b5563;
+    }
+    .loader code {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13px;
+      color: #92400e;
+    }
+  </style>
+</head>
+<body>
+  <main class="loader" id="recovery-loader">
+    <h1>売上管理・新環境を読み込み中</h1>
+    <p>旧本番ページは変更せず、新環境用の保存処理だけを差し込んで起動します。</p>
+  </main>
+
+  <script>
+    (async function bootRecoveryApp() {
+      const ROOT_APP_URL = "../index.html";
+      const PRODUCTION_API = "https://script.google.com/macros/s/AKfycbw_JJj_n_EwrdScVkOoVgvIp7JYTLNrazvEvwwwDQthCDVCbFa9Vl-Fyl9SF7qPk5gS/exec";
+      const RECOVERY_SHEET_URL = "https://docs.google.com/spreadsheets/d/1I6mEnagIY_ByAwg9vybJZ4SUWgaANiFdbQYgrS3k_EY";
+
+      try {
+      function replaceOnce(source, search, replacement, label) {
+        if (!source.includes(search)) throw new Error("Recovery patch failed: " + label);
+        return source.replace(search, replacement);
+      }
+
+      function replaceRegex(source, regex, replacement, label) {
+        let count = 0;
+        const next = source.replace(regex, function () {
+          count += 1;
+          return replacement;
+        });
+        if (count !== 1) throw new Error("Recovery patch failed: " + label + " (" + count + ")");
+        return next;
+      }
+
+      const apiConfigPatch = String.raw`
+const PRODUCTION_READ_API_URL = "${PRODUCTION_API}";
+const RECOVERY_WRITE_API_URL = "";
+const RECOVERY_CONFIG_STORAGE_KEY = "xxxber-recovery-api-url";
+const RECOVERY_SPREADSHEET_URL = "${RECOVERY_SHEET_URL}";
+const API_URL = PRODUCTION_READ_API_URL;
+
+function normalizeRecoveryApiUrl(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "PASTE_RECOVERY_WEB_APP_EXEC_URL_HERE" || text.startsWith("ここ")) return "";
+  return text;
+}
+
+function initRecoveryApiConfig() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("clearRecoveryApi")) {
+      localStorage.removeItem(RECOVERY_CONFIG_STORAGE_KEY);
+    }
+    const fromUrl = normalizeRecoveryApiUrl(params.get("recoveryApi"));
+    if (fromUrl) {
+      localStorage.setItem(RECOVERY_CONFIG_STORAGE_KEY, fromUrl);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  } catch (e) {
+    console.warn("Recovery API config failed:", e);
+  }
+}
+
+function getRecoveryWriteApiUrl() {
+  try {
+    return normalizeRecoveryApiUrl(localStorage.getItem(RECOVERY_CONFIG_STORAGE_KEY)) || normalizeRecoveryApiUrl(RECOVERY_WRITE_API_URL);
+  } catch (e) {
+    return normalizeRecoveryApiUrl(RECOVERY_WRITE_API_URL);
+  }
+}
+
+function getRecoveryReadApiUrl() {
+  return getRecoveryWriteApiUrl() || PRODUCTION_READ_API_URL;
+}
+
+initRecoveryApiConfig();`;
+
+      const recoveryHelpersPatch = String.raw`
+const RECOVERY_OUTBOX_KEY = "sales-manager-recovery-outbox";
+const RECOVERY_SEED_APPLIED_KEY = "sales-manager-recovery-seed-applied";
+const RECOVERY_DATA_KEYS = [STORAGE_KEY, TABS_STORAGE_KEY, STAFF_STORAGE_KEY, MENU_STORAGE_KEY, ADVANCE_STORAGE_KEY, CASHBOX_STORAGE_KEY, EXPENSE_STORAGE_KEY];
+const RECOVERY_KEY_LABELS = {
+  [STORAGE_KEY]: "売上",
+  [TABS_STORAGE_KEY]: "未確定伝票",
+  [STAFF_STORAGE_KEY]: "スタッフ",
+  [MENU_STORAGE_KEY]: "メニュー",
+  [ADVANCE_STORAGE_KEY]: "前借り",
+  [CASHBOX_STORAGE_KEY]: "金庫",
+  [EXPENSE_STORAGE_KEY]: "経費"
+};
+
+function readJsonStorage(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    if (!value) return fallback;
+    return JSON.parse(value);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn("localStorage write failed:", key, e);
+  }
+}
+
+function parseRecoveryValue(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "string") return JSON.parse(value);
+  return value;
+}
+
+function entrySignature(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  return [
+    entry.datetime || "",
+    entry.customerName || entry.customer || "",
+    entry.staff || "",
+    entry.payMethod || "",
+    Number(entry.amount || 0),
+    Number(entry.subtotal || 0),
+    Number(entry.tax || 0),
+    Number(entry.cardFee || 0)
+  ].join("|");
+}
+
+function mergeEntriesByIdentity() {
+  const byId = new Map();
+  const bySig = new Map();
+  Array.from(arguments).forEach(function (list) {
+    (Array.isArray(list) ? list : []).forEach(function (entry) {
+      const id = entry && entry.id;
+      const sig = entrySignature(entry);
+      if (id && byId.has(id)) return;
+      if (!id && sig && bySig.has(sig)) return;
+      if (sig && bySig.has(sig)) return;
+      if (id) byId.set(id, entry);
+      if (sig) bySig.set(sig, entry);
+    });
+  });
+  return Array.from(byId.values()).concat(Array.from(bySig.values()).filter(function (entry) {
+    return !(entry && entry.id && byId.has(entry.id));
+  }));
+}
+
+function getRecoveryOutbox() {
+  const items = readJsonStorage(RECOVERY_OUTBOX_KEY, []);
+  return Array.isArray(items) ? items : [];
+}
+
+function setRecoveryOutbox(items) {
+  writeJsonStorage(RECOVERY_OUTBOX_KEY, Array.isArray(items) ? items : []);
+}
+
+function queueRecoveryOutbox(key, data, error) {
+  const now = new Date().toISOString();
+  const items = getRecoveryOutbox();
+  items.push({
+    id: "outbox-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+    key: key,
+    label: RECOVERY_KEY_LABELS[key] || key,
+    data: data,
+    error: error && error.message ? error.message : String(error || ""),
+    createdAt: now
+  });
+  setRecoveryOutbox(items);
+}
+
+function downloadRecoveryText(filename, mime, text) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function recoveryCsvValue(value) {
+  const text = value == null ? "" : String(value);
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+function exportRecoveryJson() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    recoveryApiConfigured: Boolean(getRecoveryWriteApiUrl()),
+    spreadsheetUrl: RECOVERY_SPREADSHEET_URL,
+    data: {},
+    outbox: getRecoveryOutbox()
+  };
+  RECOVERY_DATA_KEYS.forEach(function (key) {
+    payload.data[key] = readJsonStorage(key, []);
+  });
+  downloadRecoveryText("xxxber-recovery-export-" + Date.now() + ".json", "application/json;charset=utf-8", JSON.stringify(payload, null, 2));
+}
+
+function exportRecoveryEntriesCsv() {
+  const rows = readJsonStorage(STORAGE_KEY, []);
+  const header = ["日時", "お客様", "担当者", "決済", "金額", "税抜", "TAX", "カード手数料"];
+  const lines = [header.map(recoveryCsvValue).join(",")];
+  (Array.isArray(rows) ? rows : []).forEach(function (entry) {
+    lines.push([
+      entry.datetime || "",
+      entry.customerName || entry.customer || "",
+      entry.staff || "",
+      entry.payMethod || "",
+      entry.amount || 0,
+      entry.subtotal || 0,
+      entry.tax || 0,
+      entry.cardFee || 0
+    ].map(recoveryCsvValue).join(","));
+  });
+  downloadRecoveryText("xxxber-recovery-entries-" + Date.now() + ".csv", "text/csv;charset=utf-8", "\ufeff" + lines.join("\n"));
+}
+
+async function retryRecoveryOutbox() {
+  const apiUrl = getRecoveryWriteApiUrl();
+  if (!apiUrl) {
+    alert("新しい保存先GASが未設定です。先に recoveryApi URL を設定してください。");
+    return;
+  }
+  const items = getRecoveryOutbox();
+  const remaining = [];
+  for (const item of items) {
+    try {
+      await saveData(item.key, item.data, { queueOnFailure: false });
+    } catch (e) {
+      remaining.push(item);
+    }
+  }
+  setRecoveryOutbox(remaining);
+  refreshRecoveryPanel();
+  alert(remaining.length ? "一部の未同期データが残っています。" : "未同期データを再送しました。");
+}
+
+function applyRecoverySeed() {
+  const seed = window.RECOVERY_SEED_DATA;
+  if (!seed || !seed.keys) return;
+  const seedId = seed.generatedAt || "empty-seed";
+  const hasData = Object.values(seed.keys).some(function (value) {
+    return Array.isArray(value) && value.length > 0;
+  });
+  if (!hasData || localStorage.getItem(RECOVERY_SEED_APPLIED_KEY) === seedId) return;
+  RECOVERY_DATA_KEYS.forEach(function (key) {
+    if (Array.isArray(seed.keys[key]) && seed.keys[key].length) {
+      writeJsonStorage(key, seed.keys[key]);
+    }
+  });
+  localStorage.setItem(RECOVERY_SEED_APPLIED_KEY, seedId);
+}
+
+function refreshRecoveryPanel() {
+  const panel = document.getElementById("xxxber-recovery-panel");
+  if (!panel) return;
+  const apiConfigured = Boolean(getRecoveryWriteApiUrl());
+  const outboxCount = getRecoveryOutbox().length;
+  const counts = RECOVERY_DATA_KEYS.map(function (key) {
+    const value = readJsonStorage(key, []);
+    return (RECOVERY_KEY_LABELS[key] || key) + ": " + (Array.isArray(value) ? value.length : value ? 1 : 0);
+  }).join(" / ");
+  panel.querySelector("[data-role='status']").textContent = apiConfigured ? "新しい保存先へ保存します" : "本番書込OFF";
+  panel.querySelector("[data-role='status']").style.background = apiConfigured ? "#dcfce7" : "#fee2e2";
+  panel.querySelector("[data-role='status']").style.color = apiConfigured ? "#166534" : "#991b1b";
+  panel.querySelector("[data-role='outbox']").textContent = "未同期: " + outboxCount + "件";
+  panel.querySelector("[data-role='counts']").textContent = counts;
+}
+
+function installRecoveryPanel() {
+  if (document.getElementById("xxxber-recovery-panel")) return;
+  const panel = document.createElement("div");
+  panel.id = "xxxber-recovery-panel";
+  panel.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:2147483647;width:min(340px,calc(100vw - 24px));font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fffaf3;border:1px solid #e5ded3;border-radius:8px;box-shadow:0 14px 32px rgba(15,23,42,.18);padding:10px;color:#1f2937;font-size:12px;line-height:1.45;";
+  panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;"><strong style="font-size:13px;">新環境パネル</strong><span data-role="status" style="border-radius:999px;padding:3px 8px;font-weight:700;"></span></div><div data-role="outbox" style="margin-bottom:4px;"></div><div data-role="counts" style="max-height:48px;overflow:auto;color:#4b5563;margin-bottom:8px;"></div><div style="display:flex;flex-wrap:wrap;gap:6px;"><button type="button" data-action="retry">再送</button><button type="button" data-action="json">JSON出力</button><button type="button" data-action="csv">CSV出力</button><a href="' + RECOVERY_SPREADSHEET_URL + '" target="_blank" rel="noreferrer" style="color:#2563eb;align-self:center;">Sheet</a></div>';
+  panel.querySelectorAll("button").forEach(function (button) {
+    button.style.cssText = "border:1px solid #d1d5db;background:#fff;border-radius:6px;padding:5px 8px;font-size:12px;cursor:pointer;";
+  });
+  panel.querySelector("[data-action='retry']").addEventListener("click", retryRecoveryOutbox);
+  panel.querySelector("[data-action='json']").addEventListener("click", exportRecoveryJson);
+  panel.querySelector("[data-action='csv']").addEventListener("click", exportRecoveryEntriesCsv);
+  document.body.appendChild(panel);
+  refreshRecoveryPanel();
+}
+
+setTimeout(installRecoveryPanel, 1200);
+setInterval(refreshRecoveryPanel, 5000);`;
+
+      const saveDataPatch = String.raw`async function saveData(key, data, options = {}) {
+  const json = JSON.stringify(data);
+  try {
+    localStorage.setItem(key, json);
+  } catch (e) {
+    console.warn("localStorage save failed:", e);
+  }
+
+  const apiUrl = getRecoveryWriteApiUrl();
+  if (!apiUrl) {
+    if (options.queueOnFailure !== false) queueRecoveryOutbox(key, data, new Error("recovery-api-not-configured"));
+    refreshRecoveryPanel();
+    return { success: true, localOnly: true, queued: options.queueOnFailure !== false };
+  }
+
+  try {
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ action: "set", key: key, value: json })
+    });
+    const text = await res.text();
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch (e) {
+      throw new Error("保存先の応答がJSONではありません: " + text.slice(0, 120));
+    }
+    if (!res.ok || parsed.success !== true) {
+      throw new Error(parsed.error || ("保存先エラー: HTTP " + res.status));
+    }
+    refreshRecoveryPanel();
+    return parsed;
+  } catch (e) {
+    if (options.queueOnFailure !== false) queueRecoveryOutbox(key, data, e);
+    refreshRecoveryPanel();
+    throw e;
+  }
+}
+
+// localStorage から同期的に読み込む（高速・初期表示用）`;
+
+      const loadDataPatch = String.raw`async function loadData(key) {
+  applyRecoverySeed();
+  const apiUrl = getRecoveryReadApiUrl();
+  if (apiUrl) {
+    try {
+      const res = await fetch(apiUrl + "?action=get&key=" + encodeURIComponent(key));
+      const json = await res.json();
+      if (!res.ok || json.success !== true) {
+        throw new Error(json.error || ("読込先エラー: HTTP " + res.status));
+      }
+      const parsed = parseRecoveryValue(json.value);
+      if (parsed != null) {
+        const local = readJsonStorage(key, null);
+        const next = key === STORAGE_KEY && Array.isArray(local) ? mergeEntriesByIdentity(parsed, local) : parsed;
+        writeJsonStorage(key, next);
+        return next;
+      }
+    } catch (e) {
+      console.error("API load failed, using localStorage:", e);
+    }
+  }
+  try {
+    const val = localStorage.getItem(key);
+    if (val) return JSON.parse(val);
+  } catch (e) {}
+  try {
+    const result = await window.storage.get(key);
+    if (result && result.value) return JSON.parse(result.value);
+  } catch (e) {}
+  return null;
+}
+
+// ─── Receipt Viewer (QR code destination) ───`;
+
+      const receiptFetchPatch = String.raw`const receiptApiUrl = getRecoveryWriteApiUrl();
+      if (!receiptApiUrl) {
+        setErrorMsg("新しい保存先GASが未設定です");
+        setStatus("error");
+        return;
+      }
+      const res = await fetch(receiptApiUrl, {`;
+
+      const showSavedPatch = String.raw`const showSaved = () => {
+    setSaveStatus(getRecoveryWriteApiUrl() ? "保存しました" : "端末に保存（本番未送信）");
+    setTimeout(() => setSaveStatus(""), 2000);
+  };`;
+
+      const updateTabsPatch = String.raw`const updateTabs = async tabs => {
+    if (!isLoaded || loadError) return;
+    const nextInput = Array.isArray(tabs) ? tabs : [];
+    const nextIds = new Set(nextInput.map(t => t && t.id).filter(Boolean));
+    const removedIds = new Set((openTabs || []).filter(t => t && t.id && !nextIds.has(t.id)).map(t => t.id));
+    let nextTabs = nextInput;
+    try {
+      const latest = (await loadData(TABS_STORAGE_KEY)) || [];
+      const byId = new Map();
+      (Array.isArray(latest) ? latest : []).forEach(t => {
+        if (t && t.id && !removedIds.has(t.id)) byId.set(t.id, t);
+      });
+      nextInput.forEach(t => {
+        if (t && t.id) byId.set(t.id, t);
+      });
+      nextTabs = Array.from(byId.values());
+    } catch (e) {
+      console.warn("openTabs merge skipped:", e);
+    }
+    setOpenTabs(nextTabs);
+    await saveData(TABS_STORAGE_KEY, nextTabs);
+  };`;
+
+      const res = await fetch(ROOT_APP_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error("元ページを取得できませんでした: HTTP " + res.status);
+      let html = await res.text();
+
+      html = html.replace(/<title>[\s\S]*?<\/title>/i, "<title>売上管理・新環境</title>");
+      html = html.replaceAll("売上管理システム", "売上管理・新環境");
+      html = replaceOnce(html, "</head>", '  <script src="./seed-data.js"><\/script>\n</head>', "seed script");
+      html = replaceOnce(html, 'const API_URL = "' + PRODUCTION_API + '";', apiConfigPatch, "API config");
+      html = replaceOnce(html, 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";', 'const EXPENSE_STORAGE_KEY = "sales-manager-expenses";\n' + recoveryHelpersPatch, "recovery helpers");
+      html = replaceRegex(html, /async function saveData\(key, data\) \{[\s\S]*?\/\/ localStorage から同期的に読み込む（高速・初期表示用）/, saveDataPatch, "saveData");
+      html = replaceRegex(html, /async function loadData\(key\) \{[\s\S]*?\/\/ ─── Receipt Viewer \(QR code destination\) ───/, loadDataPatch, "loadData");
+      html = replaceOnce(html, "const res = await fetch(API_URL, {", receiptFetchPatch, "receipt fetch");
+      html = replaceRegex(html, /const showSaved = \(\) => \{[\s\S]*?  \};\r?\n  \/\/ ★FIX: ロード未完了・エラー時は保存を拒否/, showSavedPatch + "\n  // ★FIX: ロード未完了・エラー時は保存を拒否", "showSaved");
+      html = replaceRegex(html, /const updateTabs = async tabs => \{[\s\S]*?  \};\r?\n  const updateStaff = async list => \{/, updateTabsPatch + "\n  const updateStaff = async list => {", "updateTabs");
+
+      document.open();
+      document.write(html);
+      document.close();
+    } catch (error) {
+      console.error(error);
+      const loader = document.getElementById("recovery-loader");
+      if (loader) {
+        loader.innerHTML = "<h1>新環境の起動に失敗しました</h1><p><code>" + String(error && error.message ? error.message : error).replace(/[&<>]/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c];
+        }) + "</code></p>";
+      }
+    }
+  })();
+  </script>
+</body>
+</html>
