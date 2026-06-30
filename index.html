@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <title>売上管理</title>
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -7112,6 +7114,12 @@ const ADVANCE_STORAGE_KEY = "sales-manager-advances";
 const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
 const EXPENSE_STORAGE_KEY = "sales-manager-expenses";
 const SYNC_OUTBOX_KEY = "sales-manager-sync-outbox";
+const APP_VERSION_KEY = "sales-manager-app-version";
+const APP_VERSION = "2026-06-30-fast-cache-v1";
+const MAX_SYNC_OUTBOX_ITEMS = 12;
+const MAX_SYNC_OUTBOX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+const LOAD_TIMEOUT_MS = 4500;
+const SAVE_TIMEOUT_MS = 6500;
 const DATA_KEYS = [STORAGE_KEY, TABS_STORAGE_KEY, STAFF_STORAGE_KEY, MENU_STORAGE_KEY, ADVANCE_STORAGE_KEY, CASHBOX_STORAGE_KEY, EXPENSE_STORAGE_KEY];
 const DATA_KEY_LABELS = {
   [STORAGE_KEY]: "売上",
@@ -7122,6 +7130,20 @@ const DATA_KEY_LABELS = {
   [CASHBOX_STORAGE_KEY]: "金庫",
   [EXPENSE_STORAGE_KEY]: "経費"
 };
+function hasCachedAppData() {
+  try {
+    return DATA_KEYS.some(key => !!localStorage.getItem(key));
+  } catch (e) {
+    return false;
+  }
+}
+function trimSyncOutboxItems(items) {
+  const now = Date.now();
+  return (Array.isArray(items) ? items : []).filter(item => {
+    const createdAt = Date.parse(item && item.createdAt || "");
+    return !Number.isFinite(createdAt) || now - createdAt <= MAX_SYNC_OUTBOX_AGE_MS;
+  }).slice(-MAX_SYNC_OUTBOX_ITEMS);
+}
 function apiReady() {
   return API_URL && !API_URL.startsWith("ここ");
 }
@@ -7143,13 +7165,13 @@ function writeJsonStorage(key, value) {
 }
 function getSyncOutbox() {
   const items = readJsonStorage(SYNC_OUTBOX_KEY, []);
-  return Array.isArray(items) ? items : [];
+  return trimSyncOutboxItems(items);
 }
 function setSyncOutbox(items) {
   writeJsonStorage(SYNC_OUTBOX_KEY, Array.isArray(items) ? items : []);
 }
 function queueSyncOutbox(key, data, error, meta = {}) {
-  const items = getSyncOutbox();
+  const items = trimSyncOutboxItems(getSyncOutbox());
   const item = {
     id: "sync-" + Date.now() + "-" + Math.random().toString(16).slice(2),
     key,
@@ -7160,11 +7182,11 @@ function queueSyncOutbox(key, data, error, meta = {}) {
     createdAt: new Date().toISOString()
   };
   if (key === TABS_STORAGE_KEY) {
-    setSyncOutbox(items.filter(existing => existing.key !== key).concat(item));
+    setSyncOutbox(trimSyncOutboxItems(items.filter(existing => existing.key !== key).concat(item)));
     return;
   }
   items.push(item);
-  setSyncOutbox(items);
+  setSyncOutbox(trimSyncOutboxItems(items));
 }
 function parseApiJson(text, context) {
   try {
@@ -7213,8 +7235,26 @@ function mergeOpenTabsById(latest, nextInput, removedIds = new Set()) {
   return Array.from(byId.values());
 }
 const saveChains = {};
+async function fetchWithTimeout(url, init = {}, timeoutMs = LOAD_TIMEOUT_MS) {
+  if (typeof AbortController !== "undefined") {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return await Promise.race([
+    fetch(url, init),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("通信タイムアウト")), timeoutMs))
+  ]);
+}
 async function postDataToApi(key, json) {
-  const res = await fetch(API_URL, {
+  const res = await fetchWithTimeout(API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "text/plain"
@@ -7224,7 +7264,7 @@ async function postDataToApi(key, json) {
       key,
       value: json
     })
-  });
+  }, SAVE_TIMEOUT_MS);
   const text = await res.text();
   const parsed = parseApiJson(text, "保存先");
   if (!res.ok || parsed.success !== true) {
@@ -7233,7 +7273,7 @@ async function postDataToApi(key, json) {
   return parsed;
 }
 async function loadDataFromApi(key) {
-  const res = await fetch(`${API_URL}?action=get&key=${encodeURIComponent(key)}`);
+  const res = await fetchWithTimeout(`${API_URL}?action=get&key=${encodeURIComponent(key)}`, {}, LOAD_TIMEOUT_MS);
   const text = await res.text();
   const json = parseApiJson(text, "読込先");
   if (!res.ok || json.success !== true) {
@@ -7242,6 +7282,16 @@ async function loadDataFromApi(key) {
   return json.value ? JSON.parse(json.value) : null;
 }
 async function prepareDataForSave(key, data, options = {}) {
+  if (key === STORAGE_KEY && options.mergeBeforeSave) {
+    try {
+      const latest = (await loadDataFromApi(key)) || [];
+      const removedIds = new Set(options.meta && Array.isArray(options.meta.removedEntryIds) ? options.meta.removedEntryIds : []);
+      const merged = mergeEntriesByIdentity(latest, data);
+      return removedIds.size ? merged.filter(entry => !(entry && removedIds.has(entry.id))) : merged;
+    } catch (e) {
+      console.warn("Entries merge skipped before save:", e);
+    }
+  }
   if (key === TABS_STORAGE_KEY && options.mergeBeforeSave) {
     try {
       const latest = (await loadDataFromApi(key)) || [];
@@ -7363,6 +7413,40 @@ function exportSyncOutbox() {
 }
 
 // ─── Receipt Viewer (QR code destination) ───
+function cleanupDeviceStorage() {
+  try {
+    setSyncOutbox(getSyncOutbox());
+    const currentVersion = localStorage.getItem(APP_VERSION_KEY);
+    if (currentVersion !== APP_VERSION) {
+      localStorage.setItem(APP_VERSION_KEY, APP_VERSION);
+      localStorage.removeItem("sales-manager-recovery-outbox");
+    }
+  } catch (e) {
+    console.warn("device storage cleanup failed:", e);
+  }
+}
+function clearDeviceCache() {
+  const ok = confirm("この端末に残っている売上管理アプリの一時データを消して再読み込みします。\nスプレッドシート本体のデータは消えません。\n続行しますか？");
+  if (!ok) return;
+  try {
+    DATA_KEYS.forEach(key => localStorage.removeItem(key));
+    localStorage.removeItem(SYNC_OUTBOX_KEY);
+    localStorage.removeItem(APP_VERSION_KEY);
+    localStorage.removeItem("sales-manager-recovery-outbox");
+  } catch (e) {
+    console.warn("local cache clear failed:", e);
+  }
+  const reload = () => {
+    const base = window.location.origin + window.location.pathname;
+    window.location.replace(base + "?v=" + encodeURIComponent(APP_VERSION + "-" + Date.now()));
+  };
+  if (typeof caches !== "undefined" && caches.keys) {
+    caches.keys().then(keys => Promise.all(keys.map(key => caches.delete(key)))).then(reload).catch(reload);
+  } else {
+    reload();
+  }
+}
+cleanupDeviceStorage();
 function ReceiptViewer({
   data
 }) {
@@ -7518,7 +7602,7 @@ function App() {
   const [expenses, setExpenses] = useState(() => loadDataSync(EXPENSE_STORAGE_KEY) || []);
   const [saveStatus, setSaveStatus] = useState("");
   // ★FIX: 初期APIロード完了まで全保存をブロック（新規端末による空データ上書きを防ぐ）
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(() => hasCachedAppData());
   const [loadError, setLoadError] = useState("");
 
   // バックグラウンドで Google Sheets API から最新データを取得して同期
@@ -7581,15 +7665,9 @@ function App() {
     if (!guardLoaded()) return;
     setSaveStatus("保存中...");
     try {
-      const latest = (await loadData(STORAGE_KEY)) || [];
-      const ids = new Set(latest.map(x => x.id));
-      const merged = ids.has(newEntry.id) ? latest : [...latest, newEntry];
-      if (merged.length < entries.length) {
-        const ok = confirm("警告: サーバーのデータ(" + latest.length + "件)が現在の表示(" + entries.length + "件)より少ない件数です。\n保存すると差分が失われる可能性があります。続行しますか？");
-        if (!ok) { setSaveStatus(""); return; }
-      }
+      const merged = mergeEntriesByIdentity(entries, [newEntry]);
       setEntries(merged);
-      await saveData(STORAGE_KEY, merged);
+      await saveData(STORAGE_KEY, merged, { mergeBeforeSave: true });
       showSaved();
     } catch (err) {
       console.error("保存エラー:", err);
@@ -7602,10 +7680,12 @@ function App() {
     if (!guardLoaded()) return;
     setSaveStatus("保存中...");
     try {
-      const latest = (await loadData(STORAGE_KEY)) || entries;
-      const next = latest.filter(e => e.id !== id);
+      const next = entries.filter(e => e.id !== id);
       setEntries(next);
-      await saveData(STORAGE_KEY, next);
+      await saveData(STORAGE_KEY, next, {
+        mergeBeforeSave: true,
+        meta: { removedEntryIds: [id] }
+      });
       showSaved();
     } catch (err) {
       console.error("削除エラー:", err);
@@ -7713,7 +7793,11 @@ function App() {
       color: palette.green,
       transition: "opacity .3s"
     }
-  }, "\u2713 ", saveStatus), /*#__PURE__*/React.createElement("span", {
+  }, "\u2713 ", saveStatus), ["master", "owner", "manager"].includes(user.role) && /*#__PURE__*/React.createElement("button", {
+    style: { ...s.btnOutline, padding: "4px 10px", fontSize: 11 },
+    onClick: clearDeviceCache,
+    title: "この端末に残っている一時データだけを消して再読み込みします"
+  }, "キャッシュクリア"), /*#__PURE__*/React.createElement("span", {
     style: s.badge(user.role === "master" ? "orange" : user.role === "owner" ? "orange" : user.role === "manager" ? "blue" : user.role === "catch" ? "purple" : "green")
   }, user.role === "master" ? "マスター" : user.role === "owner" ? `オーナー (${user.name})` : user.role === "manager" ? `管理者 (${user.name})` : user.role === "catch" ? `キャッチ (${user.name})` : user.name), /*#__PURE__*/React.createElement("button", {
     style: {
