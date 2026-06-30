@@ -7148,16 +7148,22 @@ function getSyncOutbox() {
 function setSyncOutbox(items) {
   writeJsonStorage(SYNC_OUTBOX_KEY, Array.isArray(items) ? items : []);
 }
-function queueSyncOutbox(key, data, error) {
+function queueSyncOutbox(key, data, error, meta = {}) {
   const items = getSyncOutbox();
-  items.push({
+  const item = {
     id: "sync-" + Date.now() + "-" + Math.random().toString(16).slice(2),
     key,
     label: DATA_KEY_LABELS[key] || key,
     data,
+    meta,
     error: error && error.message ? error.message : String(error || ""),
     createdAt: new Date().toISOString()
-  });
+  };
+  if (key === TABS_STORAGE_KEY) {
+    setSyncOutbox(items.filter(existing => existing.key !== key).concat(item));
+    return;
+  }
+  items.push(item);
   setSyncOutbox(items);
 }
 function parseApiJson(text, context) {
@@ -7195,14 +7201,29 @@ function mergeEntriesByIdentity() {
   });
   return Array.from(byId.values()).concat(Array.from(bySig.values()).filter(entry => !(entry && entry.id && byId.has(entry.id))));
 }
+function mergeOpenTabsById(latest, nextInput, removedIds = new Set()) {
+  const removed = removedIds instanceof Set ? removedIds : new Set(Array.isArray(removedIds) ? removedIds : []);
+  const byId = new Map();
+  (Array.isArray(latest) ? latest : []).forEach(tab => {
+    if (tab && tab.id && !removed.has(tab.id)) byId.set(tab.id, tab);
+  });
+  (Array.isArray(nextInput) ? nextInput : []).forEach(tab => {
+    if (tab && tab.id) byId.set(tab.id, tab);
+  });
+  return Array.from(byId.values());
+}
 async function saveData(key, data, options = {}) {
   const json = JSON.stringify(data);
   try {
     localStorage.setItem(key, json);
   } catch (e) {}
+  if (options.localOnly) {
+    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, options.error || new Error("local only save"), options.meta || {});
+    return { success: false, queued: true, localOnly: true };
+  }
   if (!apiReady()) {
     const error = new Error("保存先GASが未設定です");
-    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, error);
+    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, error, options.meta || {});
     throw error;
   }
   try {
@@ -7225,7 +7246,7 @@ async function saveData(key, data, options = {}) {
     return parsed;
   } catch (e) {
     console.error("API save failed:", e);
-    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, e);
+    if (options.queueOnFailure !== false) queueSyncOutbox(key, data, e, options.meta || {});
     throw e;
   }
 }
@@ -7272,7 +7293,13 @@ async function retrySyncOutbox() {
   const remaining = [];
   for (const item of items) {
     try {
-      await saveData(item.key, item.data, { queueOnFailure: false });
+      let data = item.data;
+      if (item.key === TABS_STORAGE_KEY && Array.isArray(item.data)) {
+        const latest = (await loadData(TABS_STORAGE_KEY)) || [];
+        const removedIds = item.meta && Array.isArray(item.meta.removedIds) ? item.meta.removedIds : [];
+        data = mergeOpenTabsById(latest, item.data, removedIds);
+      }
+      await saveData(item.key, data, { queueOnFailure: false });
     } catch (e) {
       remaining.push({
         ...item,
@@ -7569,23 +7596,32 @@ function App() {
     const nextIds = new Set(nextInput.map(t => t && t.id).filter(Boolean));
     const removedIds = new Set((openTabs || []).filter(t => t && t.id && !nextIds.has(t.id)).map(t => t.id));
     let nextTabs = nextInput;
+    let localOnlyReason = null;
     try {
       const latest = (await loadData(TABS_STORAGE_KEY)) || [];
-      const byId = new Map();
-      (Array.isArray(latest) ? latest : []).forEach(t => {
-        if (t && t.id && !removedIds.has(t.id)) byId.set(t.id, t);
-      });
-      nextInput.forEach(t => {
-        if (t && t.id) byId.set(t.id, t);
-      });
-      nextTabs = Array.from(byId.values());
+      nextTabs = mergeOpenTabsById(latest, nextInput, removedIds);
     } catch (err) {
-      handleSaveError("未確定伝票の同期", err);
-      return;
+      console.warn("未確定伝票のサーバー確認をスキップして端末保存します:", err);
+      localOnlyReason = err;
+      nextTabs = mergeOpenTabsById(openTabs || [], nextInput, removedIds);
     }
     setOpenTabs(nextTabs);
     setSaveStatus("保存中...");
     try {
+      if (localOnlyReason) {
+        await saveData(TABS_STORAGE_KEY, nextTabs, {
+          localOnly: true,
+          error: localOnlyReason,
+          meta: {
+            reason: "open-tabs-load-before-save-failed",
+            removedIds: Array.from(removedIds)
+          }
+        });
+        markSyncState();
+        setSaveStatus("端末保存済み（未同期）");
+        setTimeout(() => setSaveStatus(""), 3000);
+        return;
+      }
       await saveData(TABS_STORAGE_KEY, nextTabs);
       showSaved();
     } catch (err) {

@@ -52,6 +52,13 @@ function createFetch(remoteStore, options = {}) {
       };
     }
 
+    if (options.nonJsonGet) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "<html>not json</html>"
+      };
+    }
     if (options.failGet) {
       return {
         ok: false,
@@ -112,7 +119,8 @@ return {
   retrySyncOutbox,
   getSyncOutbox,
   setSyncOutbox,
-  mergeEntriesByIdentity
+  mergeEntriesByIdentity,
+  mergeOpenTabsById
 };`
   )(
     storage,
@@ -209,12 +217,14 @@ async function run() {
       "saveData",
       "loadData",
       "TABS_STORAGE_KEY",
+      "mergeOpenTabsById",
+      "markSyncState",
       "console",
       "handleSaveError",
       "showSaved",
       `${updateTabsBlock}
 return updateTabs;`
-    )(true, "", [], value => { capturedTabs = value; }, value => { saveStatus = value; }, runtime.saveData, runtime.loadData, runtime.TABS_STORAGE_KEY, console, (label, err) => errors.push({ label, err }), () => { saveStatus = "保存しました"; });
+    )(true, "", [], value => { capturedTabs = value; }, value => { saveStatus = value; }, runtime.saveData, runtime.loadData, runtime.TABS_STORAGE_KEY, runtime.mergeOpenTabsById, () => {}, console, (label, err) => errors.push({ label, err }), () => { saveStatus = "保存しました"; });
     await updateTabs([{ id: "tab-b", name: "B" }]);
     assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-a", "tab-b"]);
     assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id).sort(), ["tab-a", "tab-b"]);
@@ -239,6 +249,8 @@ return updateTabs;`
       "saveData",
       "loadData",
       "TABS_STORAGE_KEY",
+      "mergeOpenTabsById",
+      "markSyncState",
       "console",
       "handleSaveError",
       "showSaved",
@@ -253,6 +265,8 @@ return updateTabs;`
       runtime.saveData,
       runtime.loadData,
       runtime.TABS_STORAGE_KEY,
+      runtime.mergeOpenTabsById,
+      () => {},
       console,
       () => {},
       () => {}
@@ -260,6 +274,55 @@ return updateTabs;`
     await updateTabs([{ id: "tab-b", name: "B edited" }]);
     assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-b", "tab-c"]);
     assert.equal(capturedTabs.find(tab => tab.id === "tab-b").name, "B edited");
+  }
+
+  {
+    const remote = new Map([["sales-manager-open-tabs", [{ id: "server-only", name: "Server" }]]]);
+    const runtime = createRuntime(runtimeBlock, { storage: createStorage(), fetchImpl: createFetch(remote, { nonJsonGet: true }) });
+    let capturedTabs = null;
+    let saveStatus = "";
+    let marked = 0;
+    const errors = [];
+    const updateTabs = new Function(
+      "isLoaded",
+      "loadError",
+      "openTabs",
+      "setOpenTabs",
+      "setSaveStatus",
+      "saveData",
+      "loadData",
+      "TABS_STORAGE_KEY",
+      "mergeOpenTabsById",
+      "markSyncState",
+      "console",
+      "handleSaveError",
+      "showSaved",
+      `${updateTabsBlock}
+return updateTabs;`
+    )(
+      true,
+      "",
+      [],
+      value => { capturedTabs = value; },
+      value => { saveStatus = value; },
+      runtime.saveData,
+      runtime.loadData,
+      runtime.TABS_STORAGE_KEY,
+      runtime.mergeOpenTabsById,
+      () => { marked += 1; },
+      console,
+      (label, err) => errors.push({ label, err }),
+      () => { saveStatus = "保存しました"; }
+    );
+    await updateTabs([{ id: "local-only", name: "Local" }]);
+    assert.deepEqual(capturedTabs.map(tab => tab.id), ["local-only"]);
+    assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id), ["server-only"]);
+    assert.equal(runtime.getSyncOutbox().length, 1);
+    assert.equal(runtime.getSyncOutbox()[0].key, runtime.TABS_STORAGE_KEY);
+    assert.deepEqual(runtime.getSyncOutbox()[0].data.map(tab => tab.id), ["local-only"]);
+    assert.equal(errors.length, 0);
+    assert.equal(marked, 1);
+    assert.equal(saveStatus, "端末保存済み（未同期）");
   }
 
   console.log("production tests passed");
