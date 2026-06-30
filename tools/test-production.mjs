@@ -80,6 +80,18 @@ function createFetch(remoteStore, options = {}) {
   return fetchImpl;
 }
 
+function flushAsync() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function waitFor(predicate, label = "condition") {
+  for (let i = 0; i < 20; i += 1) {
+    if (predicate()) return;
+    await flushAsync();
+  }
+  assert.fail("Timed out waiting for " + label);
+}
+
 function extractRuntime() {
   const script = appScript();
   const runtimeBlock = script.match(/const API_URL[\s\S]*?\/\/ ─── Receipt Viewer \(QR code destination\) ───/)[0];
@@ -142,6 +154,7 @@ async function run() {
     const entry = { id: "entry-a", customerName: "A", amount: 1000 };
     const result = await runtime.saveData(runtime.STORAGE_KEY, [entry]);
     assert.equal(result.success, true);
+    await waitFor(() => remote.has(runtime.STORAGE_KEY), "entry save");
     assert.deepEqual(remote.get(runtime.STORAGE_KEY), [entry]);
     assert.equal(runtime.getSyncOutbox().length, 0);
   }
@@ -149,7 +162,9 @@ async function run() {
   {
     const remote = new Map();
     const runtime = createRuntime(runtimeBlock, { storage: createStorage(), fetchImpl: createFetch(remote, { failPost: true }) });
-    await assert.rejects(() => runtime.saveData(runtime.STORAGE_KEY, [{ id: "entry-b" }]), /simulated save failure/);
+    const result = await runtime.saveData(runtime.STORAGE_KEY, [{ id: "entry-b" }]);
+    assert.equal(result.success, true);
+    await waitFor(() => runtime.getSyncOutbox().length === 1, "failed save queue");
     assert.equal(runtime.getSyncOutbox().length, 1);
     assert.equal(remote.has(runtime.STORAGE_KEY), false);
   }
@@ -157,14 +172,18 @@ async function run() {
   {
     const remote = new Map();
     const runtime = createRuntime(runtimeBlock, { storage: createStorage(), fetchImpl: createFetch(remote, { successFalse: true }) });
-    await assert.rejects(() => runtime.saveData(runtime.STORAGE_KEY, [{ id: "entry-c" }]), /gas rejected save/);
+    const result = await runtime.saveData(runtime.STORAGE_KEY, [{ id: "entry-c" }]);
+    assert.equal(result.success, true);
+    await waitFor(() => runtime.getSyncOutbox().length === 1, "rejected save queue");
     assert.equal(runtime.getSyncOutbox().length, 1);
   }
 
   {
     const remote = new Map();
-    const runtime = createRuntime(runtimeBlock, { storage: createStorage(), fetchImpl: createFetch(remote, { failGet: true }) });
-    await assert.rejects(() => runtime.loadData(runtime.STORAGE_KEY), /simulated load failure/);
+    const storage = createStorage({ "sales-manager-entries": JSON.stringify([{ id: "local-fallback" }]) });
+    const runtime = createRuntime(runtimeBlock, { storage, fetchImpl: createFetch(remote, { failGet: true }) });
+    const loaded = await runtime.loadData(runtime.STORAGE_KEY);
+    assert.deepEqual(loaded, [{ id: "local-fallback" }]);
   }
 
   {
@@ -226,10 +245,11 @@ async function run() {
 return updateTabs;`
     )(true, "", [], value => { capturedTabs = value; }, value => { saveStatus = value; }, runtime.saveData, runtime.loadData, runtime.TABS_STORAGE_KEY, runtime.mergeOpenTabsById, () => {}, console, (label, err) => errors.push({ label, err }), () => { saveStatus = "保存しました"; });
     await updateTabs([{ id: "tab-b", name: "B" }]);
-    assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-a", "tab-b"]);
+    assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-b"]);
+    await waitFor(() => remote.get(runtime.TABS_STORAGE_KEY)?.length === 2, "open tabs background merge");
     assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id).sort(), ["tab-a", "tab-b"]);
     assert.equal(errors.length, 0);
-    assert.equal(saveStatus, "保存しました");
+    assert.equal(saveStatus, "");
   }
 
   {
@@ -272,8 +292,10 @@ return updateTabs;`
       () => {}
     );
     await updateTabs([{ id: "tab-b", name: "B edited" }]);
-    assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-b", "tab-c"]);
+    assert.deepEqual(capturedTabs.map(tab => tab.id).sort(), ["tab-b"]);
     assert.equal(capturedTabs.find(tab => tab.id === "tab-b").name, "B edited");
+    await waitFor(() => remote.get(runtime.TABS_STORAGE_KEY)?.length === 2, "open tabs delete merge");
+    assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id).sort(), ["tab-b", "tab-c"]);
   }
 
   {
@@ -316,13 +338,12 @@ return updateTabs;`
     );
     await updateTabs([{ id: "local-only", name: "Local" }]);
     assert.deepEqual(capturedTabs.map(tab => tab.id), ["local-only"]);
-    assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id), ["server-only"]);
-    assert.equal(runtime.getSyncOutbox().length, 1);
-    assert.equal(runtime.getSyncOutbox()[0].key, runtime.TABS_STORAGE_KEY);
-    assert.deepEqual(runtime.getSyncOutbox()[0].data.map(tab => tab.id), ["local-only"]);
+    await waitFor(() => remote.get(runtime.TABS_STORAGE_KEY)?.[0]?.id === "local-only", "open tabs non-json fallback save");
+    assert.deepEqual(remote.get(runtime.TABS_STORAGE_KEY).map(tab => tab.id), ["local-only"]);
+    assert.equal(runtime.getSyncOutbox().length, 0);
     assert.equal(errors.length, 0);
-    assert.equal(marked, 1);
-    assert.equal(saveStatus, "端末保存済み（未同期）");
+    assert.equal(marked, 0);
+    assert.equal(saveStatus, "");
   }
 
   console.log("production tests passed");
