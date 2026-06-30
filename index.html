@@ -7115,11 +7115,12 @@ const CASHBOX_STORAGE_KEY = "sales-manager-cashbox";
 const EXPENSE_STORAGE_KEY = "sales-manager-expenses";
 const SYNC_OUTBOX_KEY = "sales-manager-sync-outbox";
 const APP_VERSION_KEY = "sales-manager-app-version";
-const APP_VERSION = "2026-06-30-fast-cache-v1";
+const APP_VERSION = "2026-06-30-fast-cache-v2";
 const MAX_SYNC_OUTBOX_ITEMS = 12;
 const MAX_SYNC_OUTBOX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const LOAD_TIMEOUT_MS = 4500;
 const SAVE_TIMEOUT_MS = 6500;
+const SAVE_DEBOUNCE_MS = 180;
 const DATA_KEYS = [STORAGE_KEY, TABS_STORAGE_KEY, STAFF_STORAGE_KEY, MENU_STORAGE_KEY, ADVANCE_STORAGE_KEY, CASHBOX_STORAGE_KEY, EXPENSE_STORAGE_KEY];
 const DATA_KEY_LABELS = {
   [STORAGE_KEY]: "売上",
@@ -7156,12 +7157,17 @@ function readJsonStorage(key, fallback) {
     return fallback;
   }
 }
-function writeJsonStorage(key, value) {
+function writeStorageText(key, text) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    if (localStorage.getItem(key) !== text) {
+      localStorage.setItem(key, text);
+    }
   } catch (e) {
     console.warn("localStorage write failed:", key, e);
   }
+}
+function writeJsonStorage(key, value) {
+  writeStorageText(key, JSON.stringify(value));
 }
 function getSyncOutbox() {
   const items = readJsonStorage(SYNC_OUTBOX_KEY, []);
@@ -7234,7 +7240,17 @@ function mergeOpenTabsById(latest, nextInput, removedIds = new Set()) {
   });
   return Array.from(byId.values());
 }
-const saveChains = {};
+const saveStates = {};
+function getSaveState(key) {
+  if (!saveStates[key]) {
+    saveStates[key] = {
+      timer: null,
+      running: false,
+      latest: null
+    };
+  }
+  return saveStates[key];
+}
 async function fetchWithTimeout(url, init = {}, timeoutMs = LOAD_TIMEOUT_MS) {
   if (typeof AbortController !== "undefined") {
     const controller = new AbortController();
@@ -7303,31 +7319,61 @@ async function prepareDataForSave(key, data, options = {}) {
   }
   return data;
 }
+function scheduleRemoteSave(key, data, options = {}) {
+  const state = getSaveState(key);
+  state.latest = { data, options };
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => runScheduledRemoteSave(key), options.immediate ? 0 : SAVE_DEBOUNCE_MS);
+}
+async function runScheduledRemoteSave(key) {
+  const state = getSaveState(key);
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  if (state.running) return;
+  state.running = true;
+  try {
+    while (state.latest) {
+      const item = state.latest;
+      state.latest = null;
+      try {
+        const payload = await prepareDataForSave(key, item.data, item.options);
+        await postDataToApi(key, JSON.stringify(payload));
+      } catch (e) {
+        console.error("API save failed:", e);
+        if (item.options.queueOnFailure !== false) {
+          queueSyncOutbox(key, item.data, e, item.options.meta || {});
+        }
+      }
+    }
+  } finally {
+    state.running = false;
+    if (state.latest) {
+      state.timer = setTimeout(() => runScheduledRemoteSave(key), 0);
+    }
+  }
+}
+function flushScheduledSaves() {
+  Object.keys(saveStates).forEach(key => {
+    if (saveStates[key] && saveStates[key].latest) runScheduledRemoteSave(key);
+  });
+}
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("pagehide", flushScheduledSaves);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushScheduledSaves();
+  });
+}
 async function saveData(key, data, options = {}) {
   const json = JSON.stringify(data);
-  try {
-    localStorage.setItem(key, json);
-  } catch (e) {}
+  writeStorageText(key, json);
   if (!apiReady()) {
     const error = new Error("保存先GASが未設定です");
     if (options.queueOnFailure !== false) queueSyncOutbox(key, data, error, options.meta || {});
     return { success: true, localOnly: true };
   }
-  const run = async () => {
-    try {
-      const payload = await prepareDataForSave(key, data, options);
-      return await postDataToApi(key, JSON.stringify(payload));
-    } catch (e) {
-      console.error("API save failed:", e);
-      if (options.queueOnFailure !== false) queueSyncOutbox(key, data, e, options.meta || {});
-      return {
-        success: false,
-        queued: true,
-        error: e && e.message ? e.message : String(e || "")
-      };
-    }
-  };
-  saveChains[key] = (saveChains[key] || Promise.resolve()).catch(() => {}).then(run);
+  scheduleRemoteSave(key, data, options);
   return { success: true, queued: true };
 }
 
@@ -7346,9 +7392,7 @@ async function loadData(key) {
       if (parsed) {
         const local = readJsonStorage(key, null);
         const next = key === STORAGE_KEY && Array.isArray(local) ? mergeEntriesByIdentity(parsed, local) : parsed;
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch (e) {}
+        writeStorageText(key, JSON.stringify(next));
         return next;
       }
       return null;

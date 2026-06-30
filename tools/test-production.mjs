@@ -81,11 +81,11 @@ function createFetch(remoteStore, options = {}) {
 }
 
 function flushAsync() {
-  return new Promise(resolve => setTimeout(resolve, 0));
+  return new Promise(resolve => setTimeout(resolve, 25));
 }
 
 async function waitFor(predicate, label = "condition") {
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 80; i += 1) {
     if (predicate()) return;
     await flushAsync();
   }
@@ -101,6 +101,8 @@ function extractRuntime() {
 
 function createRuntime(runtimeBlock, { storage, fetchImpl }) {
   const documentObject = {
+    visibilityState: "visible",
+    addEventListener() {},
     createElement() {
       return {
         href: "",
@@ -125,6 +127,7 @@ function createRuntime(runtimeBlock, { storage, fetchImpl }) {
 return {
   STORAGE_KEY,
   TABS_STORAGE_KEY,
+  STAFF_STORAGE_KEY,
   SYNC_OUTBOX_KEY,
   saveData,
   loadData,
@@ -157,6 +160,18 @@ async function run() {
     await waitFor(() => remote.has(runtime.STORAGE_KEY), "entry save");
     assert.deepEqual(remote.get(runtime.STORAGE_KEY), [entry]);
     assert.equal(runtime.getSyncOutbox().length, 0);
+  }
+
+  {
+    const remote = new Map();
+    const fetchImpl = createFetch(remote);
+    const runtime = createRuntime(runtimeBlock, { storage: createStorage(), fetchImpl });
+    await runtime.saveData(runtime.STAFF_STORAGE_KEY, [{ id: "old" }]);
+    await runtime.saveData(runtime.STAFF_STORAGE_KEY, [{ id: "new-1" }]);
+    await runtime.saveData(runtime.STAFF_STORAGE_KEY, [{ id: "new-2" }]);
+    await waitFor(() => remote.get(runtime.STAFF_STORAGE_KEY)?.[0]?.id === "new-2", "coalesced staff save");
+    const posts = fetchImpl.calls.filter(call => call.init && call.init.method === "POST");
+    assert.equal(posts.length, 1);
   }
 
   {
